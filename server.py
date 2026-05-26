@@ -595,6 +595,7 @@ _SHELL_HTML = r"""<!doctype html>
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
                font-family: var(--font-sans); font-size: 13px; line-height: 1.55;
                -webkit-font-smoothing: antialiased; }
+  body { min-height: 640px; }
   body {
     min-height: 100vh;
     background-image:
@@ -1084,7 +1085,19 @@ _SHELL_HTML = r"""<!doctype html>
     }
   });
 
-  // ── ui/initialize handshake ──
+  // ── ui/initialize handshake + size reporting ──
+  function reportSize() {
+    const h = Math.max(
+      document.documentElement.scrollHeight,
+      document.body ? document.body.scrollHeight : 0,
+      300
+    );
+    sendNotification('ui/notifications/size-changed', {
+      height: h,
+      width: document.documentElement.clientWidth || window.innerWidth,
+    });
+  }
+
   (async () => {
     try {
       const result = await sendRequest('ui/initialize', {
@@ -1104,7 +1117,26 @@ _SHELL_HTML = r"""<!doctype html>
       // No host present (browser preview) — fine, we keep our defaults.
       console.debug('ui/initialize skipped:', e);
     }
+    // Report initial size, then keep reporting on any DOM growth/shrink.
+    reportSize();
+    try {
+      const ro = new ResizeObserver(() => reportSize());
+      if (document.body) ro.observe(document.body);
+    } catch(e) { /* older browser fallback below */ }
+    window.addEventListener('resize', reportSize);
+    // Re-measure after layout settles, animations finish, etc.
+    setTimeout(reportSize, 100);
+    setTimeout(reportSize, 500);
+    setTimeout(reportSize, 1500);
   })();
+
+  // Re-measure after every view switch.
+  const _show = window.show;
+  window.show = function(name){
+    _show(name);
+    setTimeout(reportSize, 50);
+    setTimeout(reportSize, 350);
+  };
 
   // ── Pricing form ──
   window.submitPricing = async function(){

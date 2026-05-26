@@ -83,6 +83,103 @@ def all_pending() -> list[dict[str, Any]]:
     return out
 
 
+def find_change(ticket: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Locate a pending change by ticket id. Returns (entry, change) or None."""
+    _ensure_seeded()
+    ticket = (ticket or "").strip().upper()
+    if not ticket:
+        return None
+    for entry in _book.values():
+        for change in entry.get("pending_changes", []):
+            if change.get("ticket", "").upper() == ticket:
+                return entry, change
+    return None
+
+
+def approve_change(ticket: str) -> dict[str, Any] | None:
+    """
+    Approve a pending change. Sets entry.current_price to the new price,
+    removes the change from pending, emits a pricing-event so live views
+    re-fetch. Returns the approved change record (with status='approved')
+    or None if no such ticket.
+    """
+    found = find_change(ticket)
+    if not found:
+        return None
+    entry, change = found
+    entry["current_price"] = float(change["new_price"])
+    entry["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    entry["pending_changes"] = [
+        c for c in entry["pending_changes"] if c.get("ticket") != change.get("ticket")
+    ]
+    change = {**change, "status": "approved", "decided_at": int(time.time())}
+    _notify("pricing.approved", change)
+    return change
+
+
+def reject_change(ticket: str, reason: str | None = None) -> dict[str, Any] | None:
+    """
+    Reject a pending change. Removes it from pending without touching the
+    current price. Emits a pricing-event so live views re-fetch. Returns
+    the rejected change record (with status='rejected') or None.
+    """
+    found = find_change(ticket)
+    if not found:
+        return None
+    entry, change = found
+    entry["pending_changes"] = [
+        c for c in entry["pending_changes"] if c.get("ticket") != change.get("ticket")
+    ]
+    change = {
+        **change,
+        "status": "rejected",
+        "decided_at": int(time.time()),
+        "reason": (reason or "").strip() or None,
+    }
+    _notify("pricing.rejected", change)
+    return change
+
+
+# Mirrors the ELASTICITY constant in jobs/runner.py — kept in sync by hand.
+# If you tweak the forecast model, update both.
+_FORECAST_ELASTICITY = 0.5
+
+
+def simulate(sku: str, new_price: float) -> dict[str, Any] | None:
+    """
+    What-if: project the marginal uplift drag if `sku` were re-priced at
+    `new_price`. Doesn't persist anything — just runs the same elasticity
+    the forecast runner applies, so chat can answer "what would this do?"
+    without polluting the pending queue.
+    """
+    entry = get_entry(sku)
+    if entry is None:
+        return None
+    previous = float(entry["current_price"])
+    new = float(new_price)
+    delta_pct = (
+        round(((new - previous) / previous) * 100.0, 2) if previous else None
+    )
+    drag_pct = round((delta_pct or 0) * _FORECAST_ELASTICITY, 2)
+    existing_drag = round(
+        sum(
+            (c.get("delta_pct") or 0) * _FORECAST_ELASTICITY
+            for c in all_pending()
+        ),
+        2,
+    )
+    return {
+        "sku": entry["sku"],
+        "name": entry["name"],
+        "current_price": previous,
+        "hypothetical_price": new,
+        "delta_pct": delta_pct,
+        "uplift_drag_pct": drag_pct,
+        "existing_pending_drag_pct": existing_drag,
+        "combined_drag_pct": round(existing_drag + drag_pct, 2),
+    }
+
+
 def submit_change(product: str, new_price: float) -> dict[str, Any]:
     """
     Record a pricing change against the book. Returns the change record.

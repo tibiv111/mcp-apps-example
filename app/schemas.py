@@ -63,7 +63,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "start_forecast",
         "title": "Start demand forecast",
         "description": (
-            "Kick off a demand forecast job. Returns a job_id; progress streams via SSE."
+            "Kick off a demand forecast job. Returns a job_id; progress streams via SSE. "
+            "Automatically factors in every currently-pending pricing change "
+            "as a price-elasticity drag on uplift."
         ),
         "inputSchema": {
             "type": "object",
@@ -73,6 +75,125 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Region code (e.g. EU, US, APAC). Defaults to GLOBAL.",
                 },
             },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_products",
+        "title": "List products",
+        "description": (
+            "List every product in the catalog with current price, pending change "
+            "count, and stock status. Use when the user asks 'what do we sell' or "
+            "wants an overview before drilling into a specific SKU."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_pending_changes",
+        "title": "List pending pricing changes",
+        "description": (
+            "Return every pricing change currently waiting for review, with "
+            "ticket id, SKU, previous and new price, percent delta, and how "
+            "long it has been queued. Empty list if nothing is pending."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "approve_pricing_change",
+        "title": "Approve a pricing change",
+        "description": (
+            "Approve a pending pricing change by ticket id. Sets the SKU's "
+            "current price to the new price, removes the ticket from the "
+            "pending queue, and broadcasts a live update so any open "
+            "workspace iframe refreshes its catalog/dashboard views. "
+            "Returns the approved change record."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ticket": {
+                    "type": "string",
+                    "description": "Ticket id from submit_pricing_change, e.g. 'PR-A4'.",
+                },
+            },
+            "required": ["ticket"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "reject_pricing_change",
+        "title": "Reject a pricing change",
+        "description": (
+            "Reject a pending pricing change by ticket id. Removes the ticket "
+            "from the pending queue without changing the current price. "
+            "Broadcasts a live update so open workspaces refresh."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ticket": {
+                    "type": "string",
+                    "description": "Ticket id from submit_pricing_change.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason for rejection (recorded on the change).",
+                },
+            },
+            "required": ["ticket"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_job",
+        "title": "Get forecast job",
+        "description": (
+            "Fetch a forecast job by id, including status, progress, the "
+            "final result if complete, and which pricing changes the model "
+            "factored into the uplift drag."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "Job id from start_forecast, e.g. 'job-eb0feb'.",
+                },
+            },
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "simulate_pricing_impact",
+        "title": "Simulate pricing impact",
+        "description": (
+            "What-if: project the marginal uplift drag if a SKU were re-priced "
+            "at a hypothetical new price. Uses the same price-elasticity model "
+            "the forecast runner applies but does NOT submit or persist "
+            "anything. Useful for answering 'what would happen if I raised X to $Y?'"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sku": {
+                    "type": "string",
+                    "description": "Product SKU to simulate.",
+                },
+                "new_price": {
+                    "type": "number",
+                    "description": "Hypothetical new price (USD).",
+                },
+            },
+            "required": ["sku", "new_price"],
             "additionalProperties": False,
         },
     },

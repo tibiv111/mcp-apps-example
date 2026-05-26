@@ -14,15 +14,28 @@ A FastAPI app that implements an [MCP Apps](https://blog.modelcontextprotocol.io
 - `GET /diagnostics` — **live trace timeline** of every MCP request, tool call, SSE event and postMessage notification, colour-coded by layer. Open this in a second tab while demoing; everything else lights up in real time.
 - `GET /admin` — operator console for pushing shell updates (banner) to every connected client.
 
-Tools:
+Tools — 10 total, grouped by role.
 
-| Tool | UI? | Purpose |
-|---|---|---|
-| `launch_nav_ai` | ✓ | Opens the workspace iframe |
-| `submit_pricing_change` | – | Called from the iframe's form view |
-| `start_forecast` | – | Called from the iframe; spawns a background job |
-| `lookup_product` | – | Forwards to a separate backend MCP using the same OAuth token |
-| `discuss_selection` | – | **Bidirectional path** — called *from* the iframe with a selection (forecast result, pricing receipt, catalog entry). Returns a payload addressed to the model so the host (Claude) replies in the chat thread without the user typing anything. |
+### Mounts the iframe
+
+- `launch_nav_ai` — opens the workspace iframe inline (the only tool with `_meta.ui.resourceUri`).
+
+### Workspace actions (called from inside the iframe)
+
+- `submit_pricing_change` — writes a new pending ticket to the shared pricing book and emits a live SSE event.
+- `start_forecast` — kicks off a forecast job that automatically factors every currently-pending pricing change as a price-elasticity drag on uplift.
+- `lookup_product` — forwards to the backend MCP using the caller's OAuth token; the response includes any pending price changes overlaid on the catalog entry.
+
+### Chat-side workflow tools (the loop Claude drives)
+
+- `list_products` — catalog overview with current prices, pending counts, stock status.
+- `list_pending_changes` — every pricing ticket currently awaiting review, with delta and age.
+- `approve_pricing_change` — approve a ticket by id; sets the SKU's current price to the new price, removes the ticket from pending, broadcasts an SSE so the open workspace's catalog and dashboard refresh live.
+- `reject_pricing_change` — reject a ticket with an optional reason; removes from pending without touching the current price.
+- `get_job` — fetch a forecast job by id, including the pricing changes it factored and base-vs-adjusted numbers.
+- `simulate_pricing_impact` — what-if: project the marginal uplift drag of a hypothetical re-pricing without persisting anything.
+
+**The chat workflow loop**: `list_pending_changes` → `simulate_pricing_impact` (optional what-if) → `approve_pricing_change` or `reject_pricing_change` → live SSE pushes refresh the catalog/dashboard in any open iframe → `start_forecast` re-runs with the new pending set.
 
 ## Project structure
 

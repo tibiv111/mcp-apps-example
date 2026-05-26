@@ -5,18 +5,24 @@ A FastAPI app that implements an [MCP Apps](https://blog.modelcontextprotocol.io
 ## What you get
 
 - `POST /mcp` — JSON-RPC 2.0 MCP endpoint (initialize, tools/*, resources/*, ping).
-- `ui://nav-ai/shell` — a polished single-page workspace served as an MCP App UI resource. Four views (launcher, dashboard, pricing form, forecast) with internal navigation. Adapts to host theme variables.
+- `GET  /mcp` — **server → client SSE channel** for JSON-RPC notifications (`notifications/resources/updated`, etc.). Open by the host's MCP client; the server pushes onto it whenever the shell changes.
+- `ui://nav-ai/shell` — a polished single-page workspace served as an MCP App UI resource. Five views (launcher, dashboard, pricing form, forecast, catalog) with internal navigation. Adapts to host theme variables.
 - `POST /oauth/*` + discovery — mock OAuth 2.1 with Dynamic Client Registration.
-- `GET /jobs/{id}/events` — direct SSE channel from the iframe for high-frequency progress, bypassing MCP.
+- `GET /jobs/{id}/events` — direct SSE channel from the iframe for high-frequency forecast progress, bypassing MCP.
+- `GET /shell/events` — second iframe-direct SSE channel for **server-pushed shell mutations** (banner changes etc.).
 - `GET /ui/shell` — same HTML in a regular browser tab for visual checks.
+- `GET /diagnostics` — **live trace timeline** of every MCP request, tool call, SSE event and postMessage notification, colour-coded by layer. Open this in a second tab while demoing; everything else lights up in real time.
+- `GET /admin` — operator console for pushing shell updates (banner) to every connected client.
 
-Three tools:
+Tools:
 
 | Tool | UI? | Purpose |
 |---|---|---|
 | `launch_nav_ai` | ✓ | Opens the workspace iframe |
 | `submit_pricing_change` | – | Called from the iframe's form view |
 | `start_forecast` | – | Called from the iframe; spawns a background job |
+| `lookup_product` | – | Forwards to a separate backend MCP using the same OAuth token |
+| `discuss_selection` | – | **Bidirectional path** — called *from* the iframe with a selection (forecast result, pricing receipt, catalog entry). Returns a payload addressed to the model so the host (Claude) replies in the chat thread without the user typing anything. |
 
 ## Project structure
 
@@ -56,6 +62,36 @@ nav-mock-mcp/
 ```
 
 **Adding a new tool**: append a definition to `app/schemas.py:TOOLS`, write a handler in `app/mcp/tools.py`, register it in `TOOL_HANDLERS`. The dispatcher needs no changes.
+
+## Three things the demo proves at runtime
+
+These are the moments that distinguish a working MCP Apps implementation from a regular tool-result app. Open `/diagnostics` in a second tab while doing any of them — every layer lights up on the timeline.
+
+### 1. Iframe → host model (bidirectional)
+
+Run a forecast, then click **Discuss this forecast with Claude** on the result panel. The iframe calls `discuss_selection` over `tools/call`. The tool response is text written *to* the model, and Claude replies in the chat thread — even though the user never typed anything. Same pattern is wired into the pricing receipt and catalog views.
+
+### 2. Server-pushed resource updates
+
+Open `/admin` and broadcast a banner. The server (a) sends `notifications/resources/updated` for `ui://nav-ai/shell` over every open `GET /mcp` SSE listener (the spec path — host re-reads the resource) and (b) pushes the same fact straight into every open iframe via `/shell/events` (the always-works path — the banner appears immediately regardless of host behaviour). The header's `rev N` counter ticks up on every update. Capabilities advertised in `initialize`:
+
+```json
+"resources": { "listChanged": true, "subscribe": true }
+```
+
+### 3. Live cross-layer diagnostics
+
+`/diagnostics` subscribes to an in-process trace bus that every layer publishes onto:
+
+- `mcp` — `POST /mcp` request/response, `GET /mcp` listener open/close, broadcast notifications
+- `tool` — each tool handler firing, with `duration_ms`
+- `jobs` — forecast pipeline create / progress / done
+- `sse` — iframe `/jobs/{id}/events` and `/shell/events` subscribe / push / unsubscribe
+- `resource` — `resources/subscribe` and `resources/unsubscribe`
+- `admin` — banner mutations
+- `ui` — iframe-side notes via `POST /diagnostics/note`
+
+Click a correlation-id chip to highlight all events from the same request or job.
 
 ## Run locally
 

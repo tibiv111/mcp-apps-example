@@ -12,7 +12,7 @@ import secrets
 import time
 from typing import Any
 
-from .. import state
+from .. import state, trace
 
 STEPS: list[tuple[str, str]] = [
     ("collecting", "Collecting demand signals"),
@@ -47,6 +47,13 @@ def create_job(region: str) -> str:
         "result": None,
     }
     state.job_subscribers[job_id] = []
+    trace.record(
+        "job.create",
+        layer="jobs",
+        summary=f"created job {job_id} (region {region})",
+        correlation_id=job_id,
+        detail={"region": region},
+    )
     return job_id
 
 
@@ -74,6 +81,13 @@ async def run_mock_job(job_id: str) -> None:
                         }
                     ),
                 },
+            )
+            trace.record(
+                "sse.progress",
+                layer="sse",
+                summary=f"{job_id} · {label} ({job['progress']}%)",
+                correlation_id=job_id,
+                detail={"step": key, "progress": job["progress"]},
             )
 
         # Synthetic but plausible result.
@@ -105,8 +119,21 @@ async def run_mock_job(job_id: str) -> None:
                 ),
             },
         )
+        trace.record(
+            "job.done",
+            layer="jobs",
+            summary=f"{job_id} complete · {region}",
+            correlation_id=job_id,
+            detail={"result": result},
+        )
     except Exception as e:  # noqa: BLE001 — mock server; surface anything
         await emit(
             job_id,
             {"event": "error", "data": json.dumps({"job_id": job_id, "error": str(e)})},
+        )
+        trace.record(
+            "job.error",
+            layer="jobs",
+            summary=f"{job_id} failed: {e}",
+            correlation_id=job_id,
         )

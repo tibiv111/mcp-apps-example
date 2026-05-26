@@ -262,6 +262,50 @@ footer.app .caret::after {
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* ── Ops banner (server-pushed via resources/updated + /shell/events) ── */
+.ops-banner {
+  display: none; align-items: center; gap: 12px;
+  padding: 10px 28px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(90deg, rgba(106,138,168,0.10), rgba(106,138,168,0.02));
+  font-family: var(--font-mono); font-size: 12px; color: var(--text);
+  animation: banner-in 320ms cubic-bezier(.2,.7,.2,1);
+}
+.ops-banner.visible { display: flex; }
+.ops-banner.tone-warn  { background: linear-gradient(90deg, rgba(200,156,99,0.14), rgba(200,156,99,0.02)); }
+.ops-banner.tone-alert { background: linear-gradient(90deg, rgba(184,106,90,0.18), rgba(184,106,90,0.02)); }
+.ops-banner .ops-tag {
+  font: 600 10px var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--accent); border: 1px solid var(--accent-d); padding: 2px 7px;
+}
+.ops-banner.tone-alert .ops-tag { color: var(--danger); border-color: var(--danger); }
+@keyframes banner-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+.session .rev {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-3);
+  border: 1px solid var(--border-2); padding: 1px 6px; letter-spacing: 0.06em;
+  transition: color 200ms, border-color 200ms;
+}
+.session .rev.bump { color: var(--accent); border-color: var(--accent-d); }
+
+/* ── "Discuss" call-to-action (iframe → host model) ─────────────── */
+.result-actions {
+  margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+}
+.discuss {
+  background: transparent; color: var(--accent); border: 1px solid var(--accent-d);
+  padding: 8px 14px; font: 600 11px var(--font-sans); letter-spacing: 0.08em;
+  text-transform: uppercase; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;
+  transition: background 140ms, color 140ms;
+}
+.discuss:hover { background: var(--accent); color: var(--bg); }
+.discuss:disabled { opacity: 0.6; cursor: progress; }
+.discuss .ico { font-style: normal; font-size: 13px; }
+.discuss-hint {
+  font: 10px var(--font-mono); color: var(--text-3); letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 /* small screens */
 @media (max-width: 640px) {
   main { padding: 18px; }

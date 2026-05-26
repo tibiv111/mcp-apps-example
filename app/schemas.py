@@ -76,6 +76,39 @@ TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "discuss_selection",
+        "title": "Discuss with assistant",
+        "description": (
+            "Invoked from inside the workspace iframe when the user selects "
+            "something (a forecast result, a dashboard row, a catalog entry) "
+            "and asks the assistant to comment on it. The tool returns a "
+            "structured payload plus a natural-language prompt that the host "
+            "model is expected to respond to inline in the chat. This is the "
+            "iframe → model bidirectional path: the user never typed "
+            "anything in chat, but the model still answers them."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "description": "What's being discussed: 'forecast', 'pricing', 'catalog', 'dashboard_row'.",
+                },
+                "context": {
+                    "type": "object",
+                    "description": "The selected payload (e.g. the forecast result dict).",
+                    "additionalProperties": True,
+                },
+                "question": {
+                    "type": "string",
+                    "description": "Optional user question. Defaults to a sensible 'comment on this'.",
+                },
+            },
+            "required": ["kind", "context"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 

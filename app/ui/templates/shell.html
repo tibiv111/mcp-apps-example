@@ -18,8 +18,19 @@
   <div class="session">
     <span><span class="dot"></span>connected</span>
     <span id="session-user">demo-user@nav-ai.local</span>
+    {# Visible build counter — increments on every server-pushed shell update.
+       Watching it tick is the simplest way to see resources/updated land. #}
+    <span class="rev" id="shell-rev" title="Shell revision (server-pushed)">rev {{ shell_state.revision }}</span>
   </div>
 </header>
+
+{# Ops banner. Set/cleared from /admin and pushed to live iframes via
+   /shell/events. Also delivered as notifications/resources/updated to MCP
+   hosts that re-read the shell. #}
+<div id="ops-banner" class="ops-banner {% if shell_state.banner %}visible tone-{{ shell_state.banner.tone or 'info' }}{% endif %}">
+  <span class="ops-tag">OPS</span>
+  <span id="ops-text">{% if shell_state.banner %}{{ shell_state.banner.text }}{% endif %}</span>
+</div>
 
 <main>
 {# Each view lives in its own partial under templates/views/. Add a new view

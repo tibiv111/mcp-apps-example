@@ -16,7 +16,7 @@ from typing import Any, AsyncIterator
 from fastapi import APIRouter, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
-from .. import state
+from .. import state, trace
 
 router = APIRouter()
 
@@ -28,6 +28,12 @@ async def job_events(job_id: str, request: Request) -> EventSourceResponse:
 
     queue: asyncio.Queue = asyncio.Queue()
     state.job_subscribers.setdefault(job_id, []).append(queue)
+    trace.record(
+        "sse.subscribe",
+        layer="sse",
+        summary=f"iframe subscribed to {job_id}",
+        correlation_id=job_id,
+    )
 
     async def stream() -> AsyncIterator[dict[str, Any]]:
         # Initial snapshot so a late subscriber lands on the current state.
@@ -63,5 +69,11 @@ async def job_events(job_id: str, request: Request) -> EventSourceResponse:
                 state.job_subscribers.get(job_id, []).remove(queue)
             except ValueError:
                 pass
+            trace.record(
+                "sse.unsubscribe",
+                layer="sse",
+                summary=f"iframe disconnected from {job_id}",
+                correlation_id=job_id,
+            )
 
     return EventSourceResponse(stream())

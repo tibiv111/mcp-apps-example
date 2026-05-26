@@ -3,6 +3,29 @@
   const BASE_URL = window.NAV_AI_BASE_URL;
   const VIEWS = ['launcher','dashboard','form','forecast','catalog'];
 
+  // ── /diagnostics tap ──
+  // Cheap fire-and-forget that drops a marker on the trace bus so the
+  // diagnostics page sees iframe-side events alongside server traffic.
+  function diagNote(kind, summary, detail, correlationId){
+    try {
+      fetch(BASE_URL + '/diagnostics/note', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        keepalive: true,
+        body: JSON.stringify({
+          kind: kind,
+          summary: summary,
+          detail: detail || {},
+          correlation_id: correlationId || null
+        })
+      });
+    } catch(_){}
+  }
+
+  // Hold onto the most recent submissions so the Discuss buttons can pass
+  // them back through the tool boundary.
+  const lastSelection = { forecast: null, pricing: null, catalog: null };
+
   // ── view router ──
   window.show = function(name){
     VIEWS.forEach(v => {
@@ -234,6 +257,7 @@
         arguments: { product, new_price }
       });
       const data = (res && res.structuredContent) || {};
+      lastSelection.pricing = data;
       const box = document.getElementById('receipt');
       document.getElementById('r-ticket').textContent  = data.ticket || '—';
       document.getElementById('r-product').textContent = data.product || product;
@@ -300,6 +324,7 @@
           document.querySelectorAll('.step-row').forEach(r => { r.classList.remove('active'); r.classList.add('done'); });
           shell.classList.remove('running');
           const r = payload.result || {};
+          lastSelection.forecast = Object.assign({ job_id: payload.job_id }, r);
           document.getElementById('fr-region').textContent     = r.region || region;
           document.getElementById('fr-horizon').textContent    = (r.horizon_weeks || 12) + ' wk';
           document.getElementById('fr-baseline').textContent   = (r.baseline_units || 0).toLocaleString() + ' u';
@@ -347,6 +372,7 @@
         err.classList.remove('hidden');
         return;
       }
+      lastSelection.catalog = data;
       document.getElementById('c-sku').textContent      = data.sku || sku;
       document.getElementById('c-name').textContent     = data.name || '—';
       document.getElementById('c-price').textContent    = data.price != null ? Number(data.price).toFixed(2) : '—';
@@ -362,4 +388,87 @@
       btn.disabled = false; btn.textContent = 'Look up via backend';
     }
   };
+
+  // ── Bidirectional: ask the host model to comment on a selection ──
+  // The discuss_selection tool returns text addressed *to* the model. Claude
+  // sees the tool result and answers in the chat thread without the user
+  // having typed anything. We trace both sides so /diagnostics shows the
+  // iframe-initiated path clearly.
+  async function callDiscuss(kind, context, buttonId){
+    const btn = document.getElementById(buttonId);
+    const original = btn ? btn.textContent : null;
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending to assistant…'; }
+    const corr = 'discuss-' + Date.now().toString(36);
+    diagNote('ui.discuss', 'iframe → host: discuss ' + kind, { kind, context }, corr);
+    try {
+      await sendRequest('tools/call', {
+        name: 'discuss_selection',
+        arguments: { kind, context }
+      });
+      diagNote('ui.discuss.sent', 'tool result delivered — host should respond in chat', { kind }, corr);
+      if (btn) {
+        btn.textContent = '✓ sent to chat';
+        setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 1800);
+      }
+    } catch (e) {
+      diagNote('ui.discuss.error', String(e && e.message || e), { kind }, corr);
+      if (btn) { btn.disabled = false; btn.textContent = original || 'Discuss with Claude'; }
+      alert('Could not reach the assistant: ' + (e && e.message || e));
+    }
+  }
+  window.discussForecast = function(){
+    if (!lastSelection.forecast) { alert('Run a forecast first.'); return; }
+    callDiscuss('forecast', lastSelection.forecast, 'discuss-forecast');
+  };
+  window.discussPricing = function(){
+    if (!lastSelection.pricing) { alert('Submit a pricing change first.'); return; }
+    callDiscuss('pricing', lastSelection.pricing, 'discuss-pricing');
+  };
+  window.discussCatalog = function(){
+    if (!lastSelection.catalog) { alert('Look up a product first.'); return; }
+    callDiscuss('catalog', lastSelection.catalog, 'discuss-catalog');
+  };
+
+  // ── Server-pushed shell updates (banner + revision) ──
+  // The MCP-level path is notifications/resources/updated, which Claude's
+  // host re-reads. This direct iframe channel is the always-works copy:
+  // the server pushes the same fact down /shell/events and the banner
+  // appears immediately for demo viewers.
+  function applyShellUpdate(payload){
+    const banner = payload && payload.banner;
+    const slot = document.getElementById('ops-banner');
+    const txt = document.getElementById('ops-text');
+    if (slot && txt) {
+      slot.classList.remove('visible','tone-info','tone-warn','tone-alert');
+      if (banner && banner.text) {
+        txt.textContent = banner.text;
+        slot.classList.add('visible', 'tone-' + (banner.tone || 'info'));
+      } else {
+        txt.textContent = '';
+      }
+    }
+    const rev = document.getElementById('shell-rev');
+    if (rev && payload && payload.revision != null) {
+      rev.textContent = 'rev ' + payload.revision;
+      rev.classList.add('bump');
+      setTimeout(() => rev.classList.remove('bump'), 1200);
+    }
+    // Tap so /diagnostics shows where the iframe handled it.
+    diagNote('ui.shell-update', 'iframe applied shell update rev ' + (payload && payload.revision), payload || {});
+    // Resize after the banner toggles.
+    setTimeout(() => { try { reportSize(); } catch(_){} }, 50);
+  }
+
+  try {
+    const shellSrc = new EventSource(BASE_URL + '/shell/events');
+    shellSrc.addEventListener('snapshot', (e) => {
+      try { applyShellUpdate(JSON.parse(e.data)); } catch(_){}
+    });
+    shellSrc.addEventListener('shell-update', (e) => {
+      try { applyShellUpdate(JSON.parse(e.data)); } catch(_){}
+    });
+    shellSrc.addEventListener('error', () => { /* auto-retry */ });
+  } catch (e) {
+    console.debug('[NAV AI] /shell/events not available:', e);
+  }
 })();

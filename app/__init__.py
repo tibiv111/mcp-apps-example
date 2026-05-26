@@ -12,8 +12,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .admin.router import router as admin_router
 from .backend.router import router as backend_router
 from .config import BASE_URL, SERVER_NAME, SERVER_VERSION, STATIC_DIR
+from .diagnostics.router import router as diagnostics_router
 from .jobs.sse import router as jobs_router
 from .mcp.router import router as mcp_router
 from .oauth.router import router as oauth_router
@@ -47,6 +49,10 @@ def create_app() -> FastAPI:
     # MCP's `lookup_product` tool. Mounted in the same process for demo
     # simplicity.
     app.include_router(backend_router)
+    # Diagnostics console + live SSE feed of the trace bus.
+    app.include_router(diagnostics_router)
+    # Admin endpoints that exercise server-pushed resource updates.
+    app.include_router(admin_router)
 
     @app.get("/")
     async def root() -> dict[str, object]:

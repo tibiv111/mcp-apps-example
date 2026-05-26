@@ -446,19 +446,14 @@ async def _safe_json(request: Request) -> Any:
 
 
 @app.get("/mcp")
-async def mcp_listener(request: Request) -> EventSourceResponse:
+async def mcp_listener() -> Response:
     """
     Streamable HTTP transport: client opens GET /mcp to listen for server-initiated
-    notifications. We don't push anything, so just hold the connection open with
-    periodic heartbeats. Without this the client's transport bails with 405.
+    notifications. We don't push anything (no listChanged, no subscriptions), so the
+    spec lets us return 405 to signal "no SSE listener available at this endpoint".
+    Claude's client treats this as a clean signal and proceeds with normal POST.
     """
-    async def stream() -> AsyncIterator[dict[str, Any]]:
-        while True:
-            if await request.is_disconnected():
-                break
-            yield {"event": "ping", "data": "{}"}
-            await asyncio.sleep(15)
-    return EventSourceResponse(stream())
+    return Response(status_code=405, headers={"Allow": "POST, DELETE"})
 
 
 @app.delete("/mcp")
@@ -482,7 +477,7 @@ async def mcp_endpoint(request: Request) -> Response:
 
     try:
         if method == "initialize":
-            return JSONResponse(_jsonrpc_result(req_id, {
+            response = JSONResponse(_jsonrpc_result(req_id, {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {
                     "tools": {"listChanged": False},
@@ -490,6 +485,11 @@ async def mcp_endpoint(request: Request) -> Response:
                 },
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             }))
+            # Streamable HTTP transport requires a session id so the client can
+            # correlate subsequent requests. Without this, Claude's MCP proxy
+            # ('/v1/toolbox/shttp/...') fails the handshake with 405.
+            response.headers["Mcp-Session-Id"] = uuid.uuid4().hex
+            return response
 
         if method == "notifications/initialized":
             return Response(status_code=202)

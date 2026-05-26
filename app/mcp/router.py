@@ -17,7 +17,14 @@ from typing import Any
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from ..config import PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION, SHELL_MIME, SHELL_URI
+from ..config import (
+    PROTOCOL_VERSION,
+    SERVER_INSTRUCTIONS,
+    SERVER_NAME,
+    SERVER_VERSION,
+    SHELL_MIME,
+    SHELL_URI,
+)
 from ..schemas import RESOURCES, TOOLS
 from ..ui.render import render_shell_html
 from .tools import TOOL_HANDLERS
@@ -112,6 +119,11 @@ async def mcp_endpoint(request: Request) -> Response:
                             "name": SERVER_NAME,
                             "version": SERVER_VERSION,
                         },
+                        # Top-level `instructions` per the MCP spec — Claude
+                        # treats this as a system-prompt-style hint, so it's
+                        # how we get the demo disclaimer in front of the user
+                        # without requiring chat-side prompting.
+                        "instructions": SERVER_INSTRUCTIONS,
                     },
                 )
             )

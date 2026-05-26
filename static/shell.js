@@ -73,6 +73,10 @@
     var vars = ctx.styles && ctx.styles.variables;
     if (vars && typeof vars === 'object') {
       Object.entries(vars).forEach(function(kv){
+        // The shell is intentionally always-dark; skip any host-provided
+        // color tokens so Claude's light theme can't bleed in. Fonts,
+        // spacing, and other non-color vars still flow through.
+        if (typeof kv[0] === 'string' && kv[0].indexOf('--color-') === 0) return;
         if (kv[1] != null) document.documentElement.style.setProperty(kv[0], kv[1]);
       });
     }

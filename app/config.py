@@ -41,6 +41,24 @@ SHELL_MIME: str = "text/html;profile=mcp-app"  # exact, no space after ';'
 
 DEMO_USER: str = "demo-user@nav-ai.local"
 
+# Returned in the MCP `initialize` response. Claude treats this like a system
+# prompt hint — it's how an MCP server tells the model how to present itself.
+# Phrased so Claude will introduce the connector and flag the demo nature on
+# first use.
+SERVER_INSTRUCTIONS: str = (
+    "This is the NAV AI mock MCP server — a demo and example implementation "
+    "of MCP Apps (SEP-1865). When the user first interacts with this connector "
+    "in a new conversation, briefly tell them this is for demo purposes only "
+    "and that all data is synthetic: pricing changes are not stored, forecast "
+    "numbers are randomly generated, and the product catalog is a hardcoded "
+    "list. The workspace iframe (opened by the `launch_nav_ai` tool) has four "
+    "views: a dashboard, a pricing submission form, a demand forecast with "
+    "live progress, and a product catalog that calls a separate backend MCP "
+    "server using forwarded OAuth. The other tools — `submit_pricing_change`, "
+    "`start_forecast`, `lookup_product` — can also be invoked directly from "
+    "chat."
+)
+
 # --- Paths -------------------------------------------------------------------
 
 # app/config.py → app/ → project root

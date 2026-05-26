@@ -389,19 +389,24 @@
     }
   };
 
-  // ── Send selection to chat via host sendMessage ──
-  // Real bidirectional path (per MCP Apps SDK): updateModelContext stashes
-  // the full selection in the model's context without crowding the chat,
-  // then sendMessage injects a short user-role trigger that makes Claude
-  // respond inline. If the host doesn't implement these methods we fall
-  // back to revealing a paste hint.
+  // ── Send selection to chat via host ──
+  // Spec-correct path (SEP-1865, 2026-01-26):
+  //   1. ui/update-model-context  — push structured selection silently so
+  //                                 it doesn't crowd the chat.
+  //   2. ui/message               — visible user-role trigger so Claude
+  //                                 replies inline.
   //
-  // SDK names: `app.sendMessage` / `app.updateModelContext`.
-  // Wire names per SEP-1865 (2026-01-26):
-  //   ui/message              — send user-role message into chat
-  //   ui/update-model-context — push content into the model's context
-  // Older SDK builds may have used camelCase or other variants; we keep a
-  // small candidates list and cache whichever name the host accepts.
+  // Caveat: Claude's MCP Apps host has a confirmed bug where step (1) is
+  // acknowledged (returns success) but silently dropped before the model
+  // sees it — specifically for iframes rendered live in response to a
+  // launch_* tool call. Reported workarounds: page refresh, restored
+  // history, or DevTools open during initial render. Tracked here:
+  // https://community.openai.com/t/mcp-app-updatemodelcontext-silently-dropped-for-live-rendered-iframes-works-after-page-refresh/1379700
+  //
+  // Until that's fixed we ALSO include the formatted selection inline in
+  // the ui/message body so today's demo works without depending on the
+  // silent push. When the host bug is fixed, drop the `+ _formatSelection`
+  // concatenation in callDiscuss for clean chat output.
   const HOST_METHOD_CANDIDATES = {
     sendMessage:        ['ui/message', 'ui/send-message', 'sendMessage', 'ui/sendMessage'],
     updateModelContext: ['ui/update-model-context', 'updateModelContext', 'ui/updateModelContext'],
@@ -437,13 +442,49 @@
     throw err;
   }
 
-  function _selectionContextBlock(kind, context){
-    return {
-      type: 'text',
-      text: '[NAV AI workspace — user selected a ' + kind + ' in the iframe]\n' +
-            'Full selection payload (the user did not type this; it was pushed via updateModelContext):\n' +
-            JSON.stringify(context, null, 2),
-    };
+  // Human-readable rendering of a selection for inclusion in the chat
+  // message. Keeps the data visible to the user *and* gives Claude full
+  // context in a single ui/message turn — no separate updateModelContext
+  // step (which Claude's host has been observed to silently drop).
+  function _formatSelection(kind, context){
+    function row(k, v){
+      if (v === null || v === undefined || v === '') return null;
+      return '- ' + k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    }
+    function table(pairs){
+      return pairs.map(p => row(p[0], p[1])).filter(Boolean).join('\n');
+    }
+    if (kind === 'forecast') {
+      return 'Forecast result (' + (context.region || '—') + '):\n' + table([
+        ['Region', context.region],
+        ['Horizon (weeks)', context.horizon_weeks],
+        ['Baseline units', context.baseline_units != null ? context.baseline_units.toLocaleString() : null],
+        ['Uplift', context.uplift_pct != null ? '+' + context.uplift_pct + '%' : null],
+        ['Confidence', context.confidence != null ? (context.confidence * 100).toFixed(1) + '%' : null],
+        ['Job ID', context.job_id],
+      ]);
+    }
+    if (kind === 'pricing') {
+      return 'Pricing change submitted:\n' + table([
+        ['Ticket', context.ticket],
+        ['Product', context.product],
+        ['New price (USD)', context.new_price != null ? Number(context.new_price).toFixed(2) : null],
+        ['Status', (context.status || '').replace(/_/g, ' ')],
+        ['Submitted (UTC)', context.submitted_at ? new Date(context.submitted_at * 1000).toISOString().slice(0, 19).replace('T', ' ') : null],
+      ]);
+    }
+    if (kind === 'catalog') {
+      return 'Product catalog entry (' + (context.sku || '—') + '):\n' + table([
+        ['SKU', context.sku],
+        ['Name', context.name],
+        ['Price', context.price != null ? Number(context.price).toFixed(2) + ' ' + (context.currency || '') : null],
+        ['In stock', context.in_stock === true ? 'yes' : context.in_stock === false ? 'no' : null],
+        ['Last updated', context.last_updated],
+        ['Source', context.source],
+      ]);
+    }
+    // Generic fallback for any unknown kind.
+    return 'Selection (' + kind + '):\n```json\n' + JSON.stringify(context, null, 2) + '\n```';
   }
 
   async function callDiscuss(kind, context, buttonId, hintId, triggerText){
@@ -452,7 +493,30 @@
     const original = btn ? btn.textContent : null;
     if (btn) { btn.disabled = true; btn.textContent = 'Asking Claude…'; }
     const corr = 'discuss-' + Date.now().toString(36);
-    diagNote('ui.discuss', 'iframe → host: sendMessage for ' + kind, { kind, trigger: triggerText }, corr);
+
+    // Step 1 (speculative / future-proof): silent context push. The host
+    // *should* deliver this to the model along with the next ui/message;
+    // Claude currently drops it silently for live-rendered iframes — the
+    // call still happens so /diagnostics shows the round-trip and the
+    // demo improves automatically once the host bug is fixed.
+    try {
+      await callHost('updateModelContext', {
+        structuredContent: { kind, selection: context },
+      });
+      diagNote('ui.updateModelContext.ok',
+        'host acknowledged silent context push (may still be dropped — see README)',
+        { kind }, corr);
+    } catch (e) {
+      diagNote('ui.updateModelContext.fail', String(e && e.message || e),
+        { kind, notImplemented: !!e.notImplemented }, corr);
+    }
+
+    // Step 2: visible user-role message. Includes the formatted selection
+    // inline so the model gets the data regardless of whether step 1 was
+    // actually delivered. When the silent-drop bug is fixed upstream, the
+    // inline copy can be removed (just send `triggerText` here).
+    const messageText = triggerText + '\n\n' + _formatSelection(kind, context);
+    diagNote('ui.discuss', 'iframe → host: ui/message for ' + kind, { kind, chars: messageText.length }, corr);
 
     function fallbackToHint(reason){
       diagNote('ui.discuss.fallback', reason, { kind }, corr);
@@ -461,47 +525,29 @@
         setTimeout(() => { try { reportSize(); } catch(_){} }, 50);
       }
       if (btn) {
-        btn.textContent = '✓ context staged · paste the hint';
-        setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 2400);
+        btn.textContent = '✓ host doesn\'t support send · paste manually';
+        setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 3200);
       }
     }
 
-    // 1) Offload the heavy selection to the model context (silent in chat).
-    let contextOk = true;
-    try {
-      await callHost('updateModelContext', {
-        content: [_selectionContextBlock(kind, context)],
-      });
-      diagNote('ui.updateModelContext.ok', 'selection pushed into model context', { kind }, corr);
-    } catch (e) {
-      contextOk = false;
-      diagNote('ui.updateModelContext.fail', String(e && e.message || e), { kind, notImplemented: !!e.notImplemented }, corr);
-    }
-
-    // 2) Trigger Claude with the short user-role prompt.
     try {
       const result = await callHost('sendMessage', {
         role: 'user',
-        content: [
-          { type: 'text', text: triggerText },
-          // If updateModelContext wasn't available, ship the data inline as a
-          // fallback so the model still has it — noisier in chat but works.
-          ...(contextOk ? [] : [_selectionContextBlock(kind, context)]),
-        ],
+        content: [{ type: 'text', text: messageText }],
       });
       if (result && result.isError) {
-        diagNote('ui.sendMessage.rejected', 'host rejected sendMessage (isError)', { kind }, corr);
-        fallbackToHint('host returned isError on sendMessage');
+        diagNote('ui.sendMessage.rejected', 'host rejected ui/message (isError)', { kind }, corr);
+        fallbackToHint('host returned isError on ui/message');
         return;
       }
-      diagNote('ui.sendMessage.ok', 'host accepted sendMessage — Claude is responding', { kind }, corr);
+      diagNote('ui.sendMessage.ok', 'host accepted ui/message — Claude is responding', { kind }, corr);
       if (btn) {
-        btn.textContent = '✓ Claude is replying in chat';
+        btn.textContent = '✓ sent · Claude is replying';
         setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 2800);
       }
     } catch (e) {
       diagNote('ui.sendMessage.fail', String(e && e.message || e), { kind, notImplemented: !!e.notImplemented }, corr);
-      fallbackToHint('host does not implement sendMessage');
+      fallbackToHint('host does not implement ui/message');
     }
   }
 

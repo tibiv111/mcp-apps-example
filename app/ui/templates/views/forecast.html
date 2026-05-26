@@ -48,15 +48,23 @@
       <div><div class="k">Confidence</div><div class="v" id="fr-confidence">—</div></div>
       <div><div class="k">Job</div><div class="v" id="fr-job" style="font-size:13px">—</div></div>
     </div>
-    {# Iframe → host tool call. Stages the selection into the chat thread as
-       a tool artifact and surfaces a follow-up prompt the user can paste. #}
+    {# Two paths to chat: inline (data in user message) or silent (context
+       pushed via ui/update-model-context, only trigger in chat). #}
     <div class="result-actions">
-      <button class="discuss" id="discuss-forecast" onclick="discussForecast()">
-        <span class="ico">↗</span> Send to chat
-      </button>
-      <span class="discuss-hint">Stages this result as a tool artifact so Claude has full context.</span>
+      <div class="discuss-row">
+        <button class="discuss" id="discuss-forecast" onclick="discussForecast()">
+          <span class="ico">↗</span> Send with data
+        </button>
+        <button class="discuss secondary" id="discuss-forecast-silent" onclick="discussForecastSilent()">
+          <span class="ico">∅</span> Send · context only
+        </button>
+      </div>
+      <span class="discuss-hint">
+        <b>Send with data</b> embeds the result in the chat message.
+        <b>Context only</b> pushes the result via <code>ui/update-model-context</code> and sends just the trigger — clean chat, but Claude's host currently drops the silent push for live iframes.
+      </span>
       <div class="chat-hint hidden" id="hint-forecast">
-        <span class="chat-hint-tag">↩ now in chat</span>
+        <span class="chat-hint-tag">↩ paste in chat</span>
         <code>analyze this forecast</code>
       </div>
     </div>

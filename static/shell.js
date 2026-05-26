@@ -487,48 +487,68 @@
     return 'Selection (' + kind + '):\n```json\n' + JSON.stringify(context, null, 2) + '\n```';
   }
 
-  async function callDiscuss(kind, context, buttonId, hintId, triggerText){
+  // Two paths to send a selection into chat:
+  //   mode = "inline"  → ui/message contains trigger + formatted data.
+  //                      User sees the data in the chat thread. Always
+  //                      works because the model receives the data in the
+  //                      same user turn.
+  //   mode = "silent"  → ui/update-model-context pushes structured data
+  //                      with no rendered text, then ui/message sends the
+  //                      trigger alone. Spec-correct, leaves the chat
+  //                      clean. Claude's MCP Apps host currently has a
+  //                      bug where the context push is acked but dropped
+  //                      for live-rendered iframes (see README).
+  async function callDiscuss(kind, context, mode, buttonId, hintId, triggerText){
     const btn = document.getElementById(buttonId);
     const hint = hintId ? document.getElementById(hintId) : null;
     const original = btn ? btn.textContent : null;
     if (btn) { btn.disabled = true; btn.textContent = 'Asking Claude…'; }
     const corr = 'discuss-' + Date.now().toString(36);
 
-    // Step 1 (speculative / future-proof): silent context push. The host
-    // *should* deliver this to the model along with the next ui/message;
-    // Claude currently drops it silently for live-rendered iframes — the
-    // call still happens so /diagnostics shows the round-trip and the
-    // demo improves automatically once the host bug is fixed.
-    try {
-      await callHost('updateModelContext', {
-        structuredContent: { kind, selection: context },
-      });
-      diagNote('ui.updateModelContext.ok',
-        'host acknowledged silent context push (may still be dropped — see README)',
-        { kind }, corr);
-    } catch (e) {
-      diagNote('ui.updateModelContext.fail', String(e && e.message || e),
-        { kind, notImplemented: !!e.notImplemented }, corr);
-    }
-
-    // Step 2: visible user-role message. Includes the formatted selection
-    // inline so the model gets the data regardless of whether step 1 was
-    // actually delivered. When the silent-drop bug is fixed upstream, the
-    // inline copy can be removed (just send `triggerText` here).
-    const messageText = triggerText + '\n\n' + _formatSelection(kind, context);
-    diagNote('ui.discuss', 'iframe → host: ui/message for ' + kind, { kind, chars: messageText.length }, corr);
+    diagNote('ui.discuss',
+      'iframe → host: ' + mode + ' send for ' + kind,
+      { kind, mode }, corr);
 
     function fallbackToHint(reason){
-      diagNote('ui.discuss.fallback', reason, { kind }, corr);
+      diagNote('ui.discuss.fallback', reason, { kind, mode }, corr);
       if (hint) {
         hint.classList.remove('hidden');
         setTimeout(() => { try { reportSize(); } catch(_){} }, 50);
       }
       if (btn) {
-        btn.textContent = '✓ host doesn\'t support send · paste manually';
+        btn.textContent = '✗ host rejected · paste manually';
         setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 3200);
       }
     }
+    function success(label){
+      if (btn) {
+        btn.textContent = label;
+        setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 2800);
+      }
+    }
+
+    // For "silent" mode, push structured context first (best effort).
+    let silentPushOk = false;
+    if (mode === 'silent') {
+      try {
+        await callHost('updateModelContext', {
+          structuredContent: { kind, selection: context },
+        });
+        silentPushOk = true;
+        diagNote('ui.updateModelContext.ok',
+          'host acknowledged silent context push (may still be dropped — see README)',
+          { kind }, corr);
+      } catch (e) {
+        diagNote('ui.updateModelContext.fail', String(e && e.message || e),
+          { kind, notImplemented: !!e.notImplemented }, corr);
+      }
+    }
+
+    // The visible user message. Inline mode includes the formatted data;
+    // silent mode sends just the trigger.
+    const messageText = mode === 'silent'
+      ? triggerText
+      : (triggerText + '\n\n' + _formatSelection(kind, context));
 
     try {
       const result = await callHost('sendMessage', {
@@ -536,33 +556,48 @@
         content: [{ type: 'text', text: messageText }],
       });
       if (result && result.isError) {
-        diagNote('ui.sendMessage.rejected', 'host rejected ui/message (isError)', { kind }, corr);
+        diagNote('ui.sendMessage.rejected', 'host rejected ui/message (isError)',
+          { kind, mode }, corr);
         fallbackToHint('host returned isError on ui/message');
         return;
       }
-      diagNote('ui.sendMessage.ok', 'host accepted ui/message — Claude is responding', { kind }, corr);
-      if (btn) {
-        btn.textContent = '✓ sent · Claude is replying';
-        setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 2800);
-      }
+      diagNote('ui.sendMessage.ok',
+        'host accepted ui/message — Claude is responding',
+        { kind, mode, silentPushOk }, corr);
+      success(mode === 'silent'
+        ? '✓ trigger sent · context staged silently'
+        : '✓ sent · Claude is replying');
     } catch (e) {
-      diagNote('ui.sendMessage.fail', String(e && e.message || e), { kind, notImplemented: !!e.notImplemented }, corr);
+      diagNote('ui.sendMessage.fail', String(e && e.message || e),
+        { kind, mode, notImplemented: !!e.notImplemented }, corr);
       fallbackToHint('host does not implement ui/message');
     }
   }
 
-  window.discussForecast = function(){
-    if (!lastSelection.forecast) { alert('Run a forecast first.'); return; }
-    callDiscuss('forecast', lastSelection.forecast, 'discuss-forecast', 'hint-forecast', 'analyze this forecast');
-  };
-  window.discussPricing = function(){
-    if (!lastSelection.pricing) { alert('Submit a pricing change first.'); return; }
-    callDiscuss('pricing', lastSelection.pricing, 'discuss-pricing', 'hint-pricing', 'review this pricing change');
-  };
-  window.discussCatalog = function(){
-    if (!lastSelection.catalog) { alert('Look up a product first.'); return; }
-    callDiscuss('catalog', lastSelection.catalog, 'discuss-catalog', 'hint-catalog', 'summarize this product');
-  };
+  // Public bindings. Each kind exposes both modes.
+  window.discussForecast       = function(){ _discuss('forecast',  'inline'); };
+  window.discussForecastSilent = function(){ _discuss('forecast',  'silent'); };
+  window.discussPricing        = function(){ _discuss('pricing',   'inline'); };
+  window.discussPricingSilent  = function(){ _discuss('pricing',   'silent'); };
+  window.discussCatalog        = function(){ _discuss('catalog',   'inline'); };
+  window.discussCatalogSilent  = function(){ _discuss('catalog',   'silent'); };
+
+  function _discuss(kind, mode){
+    const selection = lastSelection[kind];
+    if (!selection) {
+      const label = kind === 'forecast' ? 'Run a forecast first.'
+                  : kind === 'pricing'  ? 'Submit a pricing change first.'
+                  :                       'Look up a product first.';
+      alert(label);
+      return;
+    }
+    const trigger = kind === 'forecast' ? 'analyze this forecast'
+                  : kind === 'pricing'  ? 'review this pricing change'
+                  :                       'summarize this product';
+    const btnId   = (mode === 'silent' ? 'discuss-' + kind + '-silent' : 'discuss-' + kind);
+    const hintId  = 'hint-' + kind;
+    callDiscuss(kind, selection, mode, btnId, hintId, trigger);
+  }
 
   // ── Server-pushed shell updates (banner + revision) ──
   // The MCP-level path is notifications/resources/updated, which Claude's

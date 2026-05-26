@@ -39,12 +39,16 @@
     <div class="row"><span class="k">Last updated</span><span class="v" id="c-updated">—</span></div>
     <div class="row"><span class="k">Source</span><span class="v" id="c-source" style="font-family:var(--font-mono);font-size:11px;color:var(--text-2)">—</span></div>
     <div class="result-actions" style="padding:14px 16px 16px">
-      <button class="discuss" id="discuss-catalog" onclick="discussCatalog()">
-        <span class="ico">↗</span> Send to chat
-      </button>
-      <span class="discuss-hint">Stages this entry as a tool artifact so Claude has full context.</span>
+      <div class="discuss-row">
+        <button class="discuss" id="discuss-catalog" onclick="discussCatalog()">
+          <span class="ico">↗</span> Send with data
+        </button>
+        <button class="discuss secondary" id="discuss-catalog-silent" onclick="discussCatalogSilent()">
+          <span class="ico">∅</span> Send · context only
+        </button>
+      </div>
       <div class="chat-hint hidden" id="hint-catalog">
-        <span class="chat-hint-tag">↩ now in chat</span>
+        <span class="chat-hint-tag">↩ paste in chat</span>
         <code>summarize this product</code>
       </div>
     </div>

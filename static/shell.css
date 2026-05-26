@@ -298,6 +298,7 @@ footer.app .caret::after {
   margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border);
   display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
 }
+.discuss-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .discuss {
   background: transparent; color: var(--accent); border: 1px solid var(--accent-d);
   padding: 8px 14px; font: 600 11px var(--font-sans); letter-spacing: 0.08em;
@@ -307,6 +308,17 @@ footer.app .caret::after {
 .discuss:hover { background: var(--accent); color: var(--bg); }
 .discuss:disabled { opacity: 0.6; cursor: progress; }
 .discuss .ico { font-style: normal; font-size: 13px; }
+.discuss.secondary {
+  color: var(--text-2); border-color: var(--border-2);
+}
+.discuss.secondary:hover {
+  background: var(--bg-soft); color: var(--text); border-color: var(--text-2);
+}
+.discuss-hint b { color: var(--text-2); font-weight: 600; }
+.discuss-hint code {
+  font: 10px var(--font-mono); color: var(--accent);
+  background: var(--bg-soft); padding: 1px 5px; border: 1px solid var(--border-2);
+}
 .discuss-hint {
   font: 10px var(--font-mono); color: var(--text-3); letter-spacing: 0.08em;
   text-transform: uppercase;

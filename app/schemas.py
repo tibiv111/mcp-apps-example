@@ -71,9 +71,13 @@ RESOURCES: list[dict[str, Any]] = [
         "mimeType": SHELL_MIME,
         "_meta": {
             "ui": {
-                # The iframe needs to open SSE back to our own server. Listing
-                # BASE_URL here is what lets the host's CSP allow it.
-                "csp": {"connectDomains": [BASE_URL]},
+                # connectDomains  → CSP connect-src (SSE/fetch back to our server)
+                # resourceDomains → CSP script-src/style-src (shell.css, shell.js)
+                # Without resourceDomains the host CSP blocks our /static assets.
+                "csp": {
+                    "connectDomains": [BASE_URL],
+                    "resourceDomains": [BASE_URL],
+                },
                 "prefersBorder": True,
             }
         },

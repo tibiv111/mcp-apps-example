@@ -249,7 +249,17 @@ RESOURCES: list[dict[str, Any]] = [
 async def _tool_launch_nav_ai(_args: dict[str, Any]) -> dict[str, Any]:
     return {
         "content": [
-            {"type": "text", "text": "NAV AI workspace opened. Use the launcher to submit a pricing change or run a forecast."}
+            {"type": "text", "text": "NAV AI workspace opened. Use the launcher to submit a pricing change or run a forecast."},
+            # Belt-and-braces: include a resource_link too, so the host has both
+            # the inline _meta.ui.resourceUri signal AND a concrete content item
+            # referencing the UI resource. Some hosts mount on either signal.
+            {
+                "type": "resource_link",
+                "uri": SHELL_URI,
+                "name": "NAV AI shell",
+                "description": "Interactive NAV AI workspace.",
+                "mimeType": SHELL_MIME,
+            },
         ]
     }
 

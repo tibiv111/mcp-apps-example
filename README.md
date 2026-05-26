@@ -1,107 +1,103 @@
-# NAV AI Mock MCP
+# NAV AI — Mock MCP Apps server
 
-A minimal MCP server with MCP Apps UI, conforming to SEP-1865.
+A single-file FastAPI app that implements an [MCP Apps](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/) (SEP-1865) server with an interactive iframe UI, live SSE progress, and a mocked OAuth flow — everything needed to test the MCP Apps surface in Claude end-to-end without standing up real auth or persistence.
 
-## What's in it
+## What you get
 
-- **Streamable HTTP MCP server** at `/mcp` (JSON-RPC 2.0).
-- **Mock OAuth** — discovery + DCR + authorize + token endpoints, any creds accepted.
-- **One `ui://` shell resource** with all three demo workflows inside, navigated
-  client-side in JS. (Multiple `ui://` resources with cross-resource navigation
-  is harder than it sounds — see below.)
-- **Three tools:**
-  - `launch_nav_ai` — opens the shell UI in Claude.
-  - `submit_pricing_change` — synchronous tool called from the form view.
-  - `start_forecast` — kicks off a long job, returns an ID; the iframe then
-    subscribes to live progress over SSE directly to our backend.
+- `POST /mcp` — JSON-RPC 2.0 MCP endpoint (initialize, tools/*, resources/*, ping).
+- `ui://nav-ai/shell` — a polished single-page workspace served as an MCP App UI resource. Four views (launcher, dashboard, pricing form, forecast) with internal navigation. Adapts to host theme variables.
+- `POST /oauth/*` + discovery — mock OAuth 2.1 with Dynamic Client Registration.
+- `GET /jobs/{id}/events` — direct SSE channel from the iframe for high-frequency progress, bypassing MCP.
+- `GET /ui/shell` — same HTML in a regular browser tab for visual checks.
 
-Single file (`server.py`), ~450 lines, FastAPI.
+Three tools:
 
-## Why a single shell resource
+| Tool | UI? | Purpose |
+|---|---|---|
+| `launch_nav_ai` | ✓ | Opens the workspace iframe |
+| `submit_pricing_change` | – | Called from the iframe's form view |
+| `start_forecast` | – | Called from the iframe; spawns a background job |
 
-The MCP Apps spec is clear that tool results return to the *same View* that
-made the call, via `ui/notifications/tool-result`. The host does **not** tear
-down and re-render the iframe with a different `ui://` resource just because
-the tool's `_meta.ui.resourceUri` points elsewhere.
-
-So the natural pattern is:
-
-- One launcher tool with `_meta.ui.resourceUri` pointing at the shell.
-- The shell is a small SPA with internal routing.
-- All "navigation between apps" happens in JS inside the iframe.
-- The shell calls tools (`tools/call` via JSON-RPC postMessage) for actual
-  server-side actions and reads structured results back.
-
-## Protocol details (per SEP-1865)
-
-- `mimeType` must be `text/html;profile=mcp-app` exactly.
-- View ↔ Host comm is **JSON-RPC 2.0 over `postMessage`**, not a custom shape.
-- View must send `ui/initialize`, wait for the result, then
-  `ui/notifications/initialized` before doing anything else.
-- Resource `_meta.ui.csp.connectDomains` must list any backends the iframe
-  fetches/SSEs/WebSockets to. We list our own base URL so the SSE channel works.
-
-## Deploy on Render
-
-1. Push to a Git repo, **New → Blueprint** in Render, point at the repo.
-2. `render.yaml` provisions a free Python web service.
-3. ~1 minute to live. You get a `https://<name>.onrender.com` URL.
-4. Sanity check: `GET https://<your-url>/` returns the health JSON.
-   `GET https://<your-url>/ui/shell` renders the HTML in a plain browser —
-   note that buttons that call tools **won't work in the browser** because
-   there's no MCP host listening for postMessage. Navigation (Open / Back)
-   does work since that's pure JS.
-
-## Wire into Claude Desktop
-
-1. Settings → Connectors → **Add custom connector**.
-2. URL: `https://<your-url>.onrender.com/mcp`
-3. Claude reads OAuth metadata, does DCR, opens a browser tab on
-   `/oauth/authorize` (auto-redirects), exchanges the code for a token.
-4. In a chat, type "open NAV AI" or "launch nav ai". Claude calls
-   `launch_nav_ai`, the host fetches the shell resource, and the iframe
-   renders inline.
-5. Inside the iframe:
-   - **Sales Dashboard** — pure static view.
-   - **Pricing Adjustment** — fills a form, submits via `tools/call`, gets
-     a structured result back and shows the confirmation.
-   - **Forecast Run** — calls `start_forecast` via `tools/call`, gets a job
-     ID, opens an SSE stream to `/jobs/<id>/events` and shows live progress.
-
-## Local testing
+## Run locally
 
 ```bash
 pip install -r requirements.txt
 uvicorn server:app --reload --port 8000
-
-# In another shell, point the MCP Inspector at it:
-npx @modelcontextprotocol/inspector
-# Connect to http://localhost:8000/mcp
 ```
 
-The Inspector lets you exercise tools and `resources/read` without any host
-or model — quickest debugging loop.
+Open http://localhost:8000/ui/shell for the visual preview. Tool buttons will no-op (no MCP host parent listening) but navigation works.
 
-For end-to-end UI testing including the iframe handshake, the **MCPJam
-Inspector** is the only client besides Claude that fully renders MCP Apps:
+## Deploy to Render
 
-```bash
-npx @mcpjam/inspector
+1. Push this folder to a GitHub repo.
+2. In Render: **New +** → **Blueprint** → pick the repo. Render reads `render.yaml`.
+3. (Optional) Set the `BASE_URL` env var on the service to your Render URL once it's assigned, e.g. `https://nav-mock-mcp.onrender.com`. Without this, the iframe's SSE calls will use `localhost` and break in Claude.
+4. Wait for deploy. Your MCP endpoint is `https://<your-app>.onrender.com/mcp`.
+
+> Free tier sleeps after 15 min idle; first request takes ~30 sec to wake.
+
+## Connect from Claude
+
+claude.ai → **Settings** → **Connectors** → **Add custom connector**:
+
+- **Name:** NAV AI Mock
+- **URL:** `https://<your-app>.onrender.com/mcp` ← don't forget `/mcp`
+
+Click **Connect**. Claude will run the OAuth flow against the mock (which auto-accepts), then the connector is live.
+
+In a new chat, enable the connector and try:
+
+> Launch NAV AI
+
+The launcher iframe should render inline. From there:
+- Click **Open pricing**, fill in a product and price, hit Submit → ticket comes back.
+- Click **Open forecast**, pick a region, hit Start → progress bar streams over SSE, final result panel renders.
+
+## Architecture sketch
+
+```
+┌─────────────────────────────────────────────────┐
+│  FastAPI app (one process)                      │
+│                                                 │
+│  ┌────────────┐ ┌────────────┐ ┌─────────────┐  │
+│  │ MCP        │ │ OAuth      │ │ Direct      │  │
+│  │ /mcp       │ │ /oauth/*   │ │ /jobs/*     │  │
+│  └─────┬──────┘ └────────────┘ └──────┬──────┘  │
+│        │                              │         │
+│        ▼                              ▼         │
+│   In-memory: jobs dict, SSE subscriber queues   │
+│                                                 │
+│   Shell HTML (inlined CSS + JS, one function)   │
+└─────────────────────────────────────────────────┘
+        ▲                              ▲
+        │ JSON-RPC (Claude)            │ SSE (iframe → server)
+        │                              │
+        └───── Claude Desktop ─────────┘
+                    │
+              iframe (ui://nav-ai/shell)
+              postMessage ↔ Claude (JSON-RPC over postMessage)
 ```
 
-## What this isn't
+Two communication channels deliberately:
 
-- Production code. No real auth, no persistence, in-memory state.
-- A full Streamable HTTP demo — uses plain JSON responses, no streamed tool
-  output. The SSE channel covers the streaming case for the demo.
-- A solution for Shiny apps in the iframe. R Shiny apps are full SSR
-  applications; they don't fit in a `ui://` HTML resource. For real NAV
-  workflows, the right pattern is: lightweight shell UI in Claude + deep
-  links to the existing Shiny apps in the browser.
+1. **iframe ⇄ Claude (postMessage):** JSON-RPC 2.0. Form submits and forecast-starts go this way so Claude sees them, can comment on results, and keeps the chat thread coherent.
+2. **iframe ⇄ server (SSE direct):** for high-frequency progress updates that should not enter the model's context window. Allowed by `_meta.ui.csp.connectDomains` on the UI resource.
 
-## Files
+## Constraints honored (these bite if you get them wrong)
 
-- `server.py` — everything.
-- `requirements.txt` — pinned deps.
-- `render.yaml` — Render Blueprint config.
-- `README.md` — this file.
+1. Mime type is exactly `text/html;profile=mcp-app` (no space).
+2. postMessage payloads are full JSON-RPC 2.0 shape — `{jsonrpc, id, method, params}`.
+3. The iframe sends `ui/initialize` and waits for the result before calling tools.
+4. Only `launch_nav_ai` has `_meta.ui.resourceUri`. The other tools are normal.
+5. `connectDomains` includes the server's own `BASE_URL` so the iframe can open SSE back to it.
+6. `/oauth/authorize` returns HTML with a redirect, not JSON.
+
+## File layout
+
+```
+nav-mock-mcp/
+├── server.py          # FastAPI app, MCP handlers, OAuth, shell HTML
+├── requirements.txt   # fastapi, uvicorn, sse-starlette
+├── render.yaml        # Render Blueprint
+└── README.md          # this file
+```

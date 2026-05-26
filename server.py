@@ -1056,9 +1056,12 @@ _SHELL_HTML = r"""<!doctype html>
         reject:  (e) => { settled = true; reject(e); }
       });
       postRpc({jsonrpc:'2.0', id, method, params: params||{}});
-      if (hostMode === 'unknown') {
+      // Fallback to direct HTTP only for tools/* and resources/* — never for
+      // ui/* methods, which are host-only and meaningless to our /mcp endpoint.
+      // Also: only fall back if no message at all has arrived from the parent.
+      if (hostMode === 'unknown' && !method.startsWith('ui/')) {
         setTimeout(() => {
-          if (!settled && pending.has(id)) {
+          if (!settled && pending.has(id) && hostMode === 'unknown') {
             pending.delete(id);
             hostMode = 'direct';
             console.debug('[NAV AI] no MCP host detected, falling back to direct HTTP /mcp');
@@ -1093,11 +1096,22 @@ _SHELL_HTML = r"""<!doctype html>
 
   window.addEventListener('message', (ev) => {
     const msg = ev.data;
-    if (!msg || msg.jsonrpc !== '2.0') return;
-    hostMode = 'host';
+    // ANY message from the parent — including Claude's non-JSON-RPC auth/session
+    // probes — proves there's a host. Flip out of unknown mode immediately so
+    // we don't fall back to direct HTTP and break the handshake. See
+    // https://github.com/anthropics/claude-ai-mcp/issues/47 for context.
+    if (msg && typeof msg === 'object') {
+      if (hostMode !== 'direct') hostMode = 'host';
+    }
+    if (!msg || msg.jsonrpc !== '2.0') {
+      // Log non-protocol traffic for debugging; do not respond.
+      try { console.debug('[NAV AI] non-JSON-RPC msg from parent:', msg); } catch(e){}
+      return;
+    }
 
     // Notifications & requests from host (have 'method', no 'result'/'error').
     if (typeof msg.method === 'string') {
+      try { console.debug('[NAV AI] host →', msg.method, msg.params); } catch(e){}
       switch (msg.method) {
         case 'ui/notifications/tool-input':
         case 'ui/notifications/tool-input-partial':
@@ -1118,6 +1132,12 @@ _SHELL_HTML = r"""<!doctype html>
             window.parent.postMessage({jsonrpc:'2.0', id: msg.id, result: {}}, '*');
           }
           break;
+        case 'ping':
+          // Respond to ping requests if they carry an id.
+          if (msg.id != null) {
+            window.parent.postMessage({jsonrpc:'2.0', id: msg.id, result: {}}, '*');
+          }
+          break;
         default:
           // Unknown notification — ignore silently.
           break;
@@ -1126,6 +1146,7 @@ _SHELL_HTML = r"""<!doctype html>
     }
 
     // Responses to our outgoing requests (have 'result' or 'error').
+    try { console.debug('[NAV AI] host ← response id=' + msg.id, msg.result || msg.error); } catch(e){}
     if (msg.id != null && pending.has(msg.id)) {
       const {resolve, reject} = pending.get(msg.id);
       pending.delete(msg.id);
@@ -1147,23 +1168,43 @@ _SHELL_HTML = r"""<!doctype html>
   }
 
   (async () => {
+    let initFired = false;
+    function fireInitialized() {
+      if (initFired) return;
+      initFired = true;
+      try { console.debug('[NAV AI] → ui/notifications/initialized'); } catch(e){}
+      sendNotification('ui/notifications/initialized', {});
+    }
     try {
-      // Per SEP-1865 the View's ui/initialize uses 'appCapabilities' and
-      // 'clientInfo', not 'capabilities' and 'appInfo'.
-      const result = await sendRequest('ui/initialize', {
+      // Race the host's ui/initialize response against a 3s timeout. Some hosts
+      // route the response through a sandbox proxy and the round-trip is slow
+      // on cold starts; rather than block forever (and never let the host flip
+      // visibility), we fire 'initialized' regardless and apply hostContext
+      // when/if the response arrives later.
+      const initPromise = sendRequest('ui/initialize', {
         protocolVersion: '2025-06-18',
         appCapabilities: {
           availableDisplayModes: ['inline'],
         },
         clientInfo: { name: 'nav-ai-shell', version: '0.1.0' },
       });
-      // McpUiInitializeResult.hostContext carries theme variables etc.
-      applyHostContext(result && result.hostContext);
-      // Now signal that we're ready to receive tool-input / tool-result.
-      sendNotification('ui/notifications/initialized', {});
+      const timeoutPromise = new Promise(function(_, rej){
+        setTimeout(function(){ rej(new Error('ui/initialize response timeout')); }, 3000);
+      });
+      try {
+        const result = await Promise.race([initPromise, timeoutPromise]);
+        applyHostContext(result && result.hostContext);
+      } catch (raceErr) {
+        try { console.debug('[NAV AI] ui/initialize did not resolve in time:', raceErr.message); } catch(e){}
+        // Still apply context if the real promise resolves later.
+        initPromise.then(function(r){ applyHostContext(r && r.hostContext); }).catch(function(){});
+      }
+      fireInitialized();
     } catch (e) {
-      // No host present (browser preview) — fine, we keep our defaults.
-      console.debug('ui/initialize skipped:', e);
+      try { console.debug('[NAV AI] ui/initialize threw:', e); } catch(_){}
+      // Even on error, if we're in host mode (parent posted something), fire
+      // initialized so the host can flip visibility on its end.
+      if (hostMode === 'host') fireInitialized();
     }
     // Report initial size, then keep reporting on any DOM growth/shrink.
     reportSize();

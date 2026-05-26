@@ -393,15 +393,18 @@
   // Real bidirectional path (per MCP Apps SDK): updateModelContext stashes
   // the full selection in the model's context without crowding the chat,
   // then sendMessage injects a short user-role trigger that makes Claude
-  // respond inline. If the host doesn't implement these methods (older
-  // host or different wire-name) we fall back to revealing a paste hint.
+  // respond inline. If the host doesn't implement these methods we fall
+  // back to revealing a paste hint.
   //
-  // The SDK names are `app.sendMessage` / `app.updateModelContext`. The
-  // JSON-RPC method name on the wire isn't formally pinned in the public
-  // docs we have, so we try a couple of likely variants.
+  // SDK names: `app.sendMessage` / `app.updateModelContext`.
+  // Wire names per SEP-1865 (2026-01-26):
+  //   ui/message              — send user-role message into chat
+  //   ui/update-model-context — push content into the model's context
+  // Older SDK builds may have used camelCase or other variants; we keep a
+  // small candidates list and cache whichever name the host accepts.
   const HOST_METHOD_CANDIDATES = {
-    sendMessage:        ['sendMessage', 'ui/sendMessage'],
-    updateModelContext: ['updateModelContext', 'ui/updateModelContext'],
+    sendMessage:        ['ui/message', 'ui/send-message', 'sendMessage', 'ui/sendMessage'],
+    updateModelContext: ['ui/update-model-context', 'updateModelContext', 'ui/updateModelContext'],
   };
   // Cache the first method name that worked so subsequent calls go direct.
   const _hostMethodResolved = { sendMessage: null, updateModelContext: null };

@@ -462,10 +462,15 @@ async def mcp_endpoint(request: Request) -> Response:
             if not handler:
                 return JSONResponse(_jsonrpc_error(req_id, -32602, f"Unknown tool: {name}"))
             result = await handler(args)
-            # Echo UI metadata on tool result so the host renders the iframe.
+            # Echo only resourceUri on the tool result so the host renders the iframe.
+            # Other _meta.ui fields (csp, permissions) belong on the resource and are
+            # ignored when set on a tool — see warning in mcp-ext-apps-host.
             tool_def = next((t for t in TOOLS if t["name"] == name), None)
-            if tool_def and "_meta" in tool_def:
-                result.setdefault("_meta", {}).update(tool_def["_meta"])
+            if tool_def:
+                tool_ui = (tool_def.get("_meta") or {}).get("ui") or {}
+                resource_uri = tool_ui.get("resourceUri")
+                if resource_uri:
+                    result.setdefault("_meta", {}).setdefault("ui", {})["resourceUri"] = resource_uri
             return JSONResponse(_jsonrpc_result(req_id, result))
 
         if method == "resources/list":
@@ -973,22 +978,59 @@ _SHELL_HTML = r"""<!doctype html>
     });
   };
 
-  // ── JSON-RPC postMessage client ──
+  // ── JSON-RPC postMessage client (with direct-HTTP fallback for /ui/shell preview) ──
   let nextId = 1;
   const pending = new Map();
+  // If no parent responds within HOST_PROBE_MS, we assume we're in the preview
+  // (a regular browser tab, no MCP host listening) and fall back to direct HTTP.
+  const HOST_PROBE_MS = 800;
+  let hostMode = 'unknown'; // 'host' | 'direct' | 'unknown'
+
+  function postRpc(payload){
+    try { window.parent.postMessage(payload, '*'); } catch(e) {}
+  }
+
+  async function directCall(method, params){
+    const r = await fetch(BASE_URL + '/mcp', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'Accept':'application/json'},
+      body: JSON.stringify({jsonrpc:'2.0', id: nextId++, method, params: params||{}})
+    });
+    const json = await r.json();
+    if (json.error) throw new Error(json.error.message || 'rpc error');
+    return json.result;
+  }
+
   function sendRequest(method, params){
+    if (hostMode === 'direct') return directCall(method, params);
     return new Promise((resolve, reject) => {
       const id = nextId++;
-      pending.set(id, {resolve, reject});
-      window.parent.postMessage({jsonrpc:'2.0', id, method, params: params||{}}, '*');
+      let settled = false;
+      pending.set(id, {
+        resolve: (v) => { settled = true; resolve(v); },
+        reject:  (e) => { settled = true; reject(e); }
+      });
+      postRpc({jsonrpc:'2.0', id, method, params: params||{}});
+      if (hostMode === 'unknown') {
+        setTimeout(() => {
+          if (!settled && pending.has(id)) {
+            pending.delete(id);
+            hostMode = 'direct';
+            console.debug('[NAV AI] no MCP host detected, falling back to direct HTTP /mcp');
+            directCall(method, params).then(resolve, reject);
+          }
+        }, HOST_PROBE_MS);
+      }
     });
   }
   function sendNotification(method, params){
-    window.parent.postMessage({jsonrpc:'2.0', method, params: params||{}}, '*');
+    if (hostMode === 'direct') return; // host-only notifications
+    postRpc({jsonrpc:'2.0', method, params: params||{}});
   }
   window.addEventListener('message', (ev) => {
     const msg = ev.data;
     if (!msg || msg.jsonrpc !== '2.0') return;
+    hostMode = 'host';
     if (msg.id != null && pending.has(msg.id)) {
       const {resolve, reject} = pending.get(msg.id);
       pending.delete(msg.id);
@@ -1002,7 +1044,7 @@ _SHELL_HTML = r"""<!doctype html>
       const result = await sendRequest('ui/initialize', {
         protocolVersion: '2025-06-18',
         capabilities: {},
-        clientInfo: { name: 'nav-ai-shell', version: '0.1.0' },
+        appInfo: { name: 'nav-ai-shell', version: '0.1.0' },
       });
       // Apply theme variables, if any.
       const theme = result && result.theme && result.theme.cssVariables;

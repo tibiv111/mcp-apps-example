@@ -49,11 +49,20 @@
       <div><div class="k">Job</div><div class="v" id="fr-job" style="font-size:13px">—</div></div>
     </div>
 
-    {# Visible coupling between pricing book and forecast — the drag is the
-       difference between the base uplift and the price-adjusted one. #}
+    {# Two-layer visible coupling between pricing book and forecast:
+       baseline shift from approved (in-effect) drifts, plus uplift drag
+       from pending (future) submissions. #}
+    <div id="fr-baseline-wrap" class="forecast-pricing hidden">
+      <div class="forecast-pricing-head">
+        Baseline shifted by approved prices
+        <span class="forecast-pricing-drag" id="fr-baseline-shift">—</span>
+      </div>
+      <div id="fr-drifts" class="forecast-considered"></div>
+    </div>
+
     <div id="fr-pricing-wrap" class="forecast-pricing hidden">
       <div class="forecast-pricing-head">
-        Pricing factored
+        Uplift drag from pending changes
         <span class="forecast-pricing-drag" id="fr-drag">—</span>
       </div>
       <div id="fr-considered" class="forecast-considered"></div>

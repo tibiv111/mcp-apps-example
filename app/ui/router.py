@@ -33,8 +33,14 @@ async def dashboard_snapshot() -> JSONResponse:
     """
     Aggregate of pricing-book and job state for the dashboard view. Cheap
     enough to call on every dashboard mount + every pricing-event push.
+
+    pricing.snapshot() is an async HTTP call to the backend — the book
+    is no longer in this process.
     """
-    book = pricing.snapshot()
+    try:
+        book = await pricing.snapshot()
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"backend unreachable: {e}"}, status_code=503)
     jobs = list(state.jobs.values())
     running_jobs = [j for j in jobs if j.get("status") == "running"]
     done_jobs = [j for j in jobs if j.get("status") == "done"]

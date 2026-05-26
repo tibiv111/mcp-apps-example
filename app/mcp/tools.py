@@ -1,17 +1,18 @@
 """
-Tool handlers. The dispatcher (`router.py`) looks up the function by tool
-name in `TOOL_HANDLERS`, awaits it with the parsed `arguments` and the
-caller's bearer token (or None), and returns its dict verbatim as the tool
-result.
+Tool handlers (frontend MCP — the service Claude talks to).
 
-The bearer token is threaded through so handlers that delegate to other
-services (see `lookup_product`) can forward the caller's identity instead
-of inventing their own.
+The frontend MCP is a thin proxy: every pricing-touching handler forwards
+through the `pricing` client to the backend MCP, where the actual book
+lives. That's how we get a single source of truth across both deploy
+modes (combined and split).
 
 Each handler returns `{content: [...], structuredContent: {...}}`:
   - `content` is text/image blocks shown to the user / model.
   - `structuredContent` is machine-readable data the iframe consumes via
     `res.structuredContent.*` after a `tools/call`.
+
+The bearer token is threaded through so handlers that delegate to other
+services (the backend MCP) can forward the caller's identity.
 """
 
 from __future__ import annotations
@@ -20,10 +21,7 @@ import asyncio
 import time
 from typing import Any, Awaitable, Callable
 
-import httpx
-
-from .. import pricing, state  # re-exported for handlers that need shared dicts
-from ..config import BACKEND_URL
+from .. import pricing, state
 from ..jobs import runner as jobs_runner
 
 
@@ -48,19 +46,25 @@ async def launch_nav_ai(_args: dict[str, Any], _token: str | None) -> dict[str, 
     }
 
 
-async def submit_pricing_change(args: dict[str, Any], _token: str | None) -> dict[str, Any]:
+async def submit_pricing_change(args: dict[str, Any], token: str | None) -> dict[str, Any]:
     product = str(args.get("product", "")).strip() or "UNKNOWN"
-    new_price = args.get("new_price")
     try:
-        new_price = float(new_price)
+        new_price = float(args.get("new_price"))
     except (TypeError, ValueError):
         new_price = 0.0
-    # Persist into the shared pricing book — this is what makes the
-    # catalog and forecast see the change.
-    change = pricing.submit_change(product, new_price)
+    try:
+        change = await pricing.submit_change(product, new_price, token=token)
+    except Exception as e:  # noqa: BLE001
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": f"backend unreachable: {e}"}],
+        }
     delta = change.get("delta_pct")
-    delta_str = (f" ({delta:+.2f}% vs previous {change['previous_price']:.2f})"
-                 if delta is not None else "")
+    delta_str = (
+        f" ({delta:+.2f}% vs previous {change['previous_price']:.2f})"
+        if delta is not None
+        else ""
+    )
     return {
         "content": [
             {
@@ -77,19 +81,38 @@ async def submit_pricing_change(args: dict[str, Any], _token: str | None) -> dic
     }
 
 
-async def start_forecast(args: dict[str, Any], _token: str | None) -> dict[str, Any]:
+async def start_forecast(args: dict[str, Any], token: str | None) -> dict[str, Any]:
     region = str(args.get("region", "GLOBAL")).strip().upper() or "GLOBAL"
-    # Snapshot the pending pricing changes at job-creation time so the
-    # forecast result is reproducible even if more changes land mid-run.
-    pending = pricing.all_pending()
-    job_id = jobs_runner.create_job(region, pending_pricing=pending)
-    # Fire-and-forget — progress streams over SSE on /jobs/{id}/events.
+    # Snapshot both layers of pricing state from the backend at job-creation
+    # time so the forecast result is reproducible.
+    try:
+        pending = await pricing.all_pending(token=token)
+        drifts = await pricing.all_current_drifts(token=token)
+    except Exception as e:  # noqa: BLE001
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": f"backend unreachable: {e}"}],
+        }
+    job_id = jobs_runner.create_job(region, pending_pricing=pending, current_drifts=drifts)
     asyncio.create_task(jobs_runner.run_mock_job(job_id))
+
+    parts: list[str] = []
+    if drifts:
+        parts.append(
+            f"{len(drifts)} approved price move{'s' if len(drifts) != 1 else ''} "
+            f"(baseline shift)"
+        )
     if pending:
-        plural = "s" if len(pending) != 1 else ""
-        pricing_note = f" Factoring in {len(pending)} pending pricing change{plural}."
-    else:
-        pricing_note = " No pending pricing changes to factor in."
+        parts.append(
+            f"{len(pending)} pending change{'s' if len(pending) != 1 else ''} "
+            f"(uplift drag)"
+        )
+    pricing_note = (
+        " Factoring in " + " and ".join(parts) + "."
+        if parts
+        else " No pricing moves to factor in."
+    )
+
     return {
         "content": [
             {
@@ -102,19 +125,15 @@ async def start_forecast(args: dict[str, Any], _token: str | None) -> dict[str, 
             "region": region,
             "status": "queued",
             "pending_pricing_changes": len(pending),
+            "approved_price_drifts": len(drifts),
         },
     }
 
 
 async def lookup_product(args: dict[str, Any], token: str | None) -> dict[str, Any]:
     """
-    Bridge to the backend MCP server. Forwards the caller's bearer token so
-    the backend can authenticate the request against the same OAuth-issued
-    tokens.
-
-    Calls the backend's `get_product` tool over HTTP. The backend lives at
-    `/backend/mcp` on this same host but is treated as if it were remote —
-    this is what the swap to a real separate service would look like.
+    Forward to the backend MCP's get_product. The backend now joins
+    catalog + pricing book and returns the unified view directly.
     """
     sku = str(args.get("sku", "")).strip().upper()
     if not sku:
@@ -127,98 +146,86 @@ async def lookup_product(args: dict[str, Any], token: str | None) -> dict[str, A
             "isError": True,
             "content": [{"type": "text", "text": "no bearer token to forward to backend"}],
         }
-
-    backend_url = f"{BACKEND_URL}/backend/mcp"
-    rpc_payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": "get_product", "arguments": {"sku": sku}},
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                backend_url,
-                json=rpc_payload,
-                headers={"Authorization": f"Bearer {token}"},
-            )
-    except httpx.HTTPError as e:
+        entry = await pricing.get_entry(sku, token=token)
+    except Exception as e:  # noqa: BLE001
         return {
             "isError": True,
             "content": [{"type": "text", "text": f"backend unreachable: {e}"}],
         }
-
-    if resp.status_code == 401:
+    if not entry:
         return {
             "isError": True,
-            "content": [{"type": "text", "text": "backend rejected the bearer token"}],
+            "content": [{"type": "text", "text": f"Unknown SKU: {sku}"}],
+            "structuredContent": {"sku": sku, "found": False},
         }
-    if resp.status_code >= 400:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": f"backend error: HTTP {resp.status_code}"}],
-        }
-
-    body = resp.json()
-    if "error" in body:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": f"backend error: {body['error'].get('message')}"}],
-        }
-
-    inner = body.get("result") or {}
-    # Pass through the backend's content + structuredContent. Tag the result
-    # with provenance so the UI can show that it came from the backend.
-    structured = dict(inner.get("structuredContent") or {})
-    structured.setdefault("source", "nav-ai-backend")
+    summary = f"{sku} · {entry.get('name', '—')} · {entry.get('current_price')} {entry.get('currency', '')}".strip()
+    if entry.get("pending_changes"):
+        p = entry["pending_changes"][-1]
+        summary += (
+            f" · pending {p['new_price']:.2f} "
+            f"({p['ticket']}, {p['status'].replace('_', ' ')})"
+        )
+    entry = {**entry, "source": "nav-ai-backend (single source of truth)"}
     return {
-        "content": inner.get("content")
-        or [{"type": "text", "text": f"Looked up {sku} via backend."}],
-        "structuredContent": structured,
-        "isError": inner.get("isError", False),
+        "content": [{"type": "text", "text": summary}],
+        "structuredContent": entry,
     }
 
 
-async def list_products(_args: dict[str, Any], _token: str | None) -> dict[str, Any]:
-    """Catalog overview with current prices and pending counts."""
-    entries = pricing.list_entries()
-    items = [
-        {
-            "sku": e["sku"],
-            "name": e["name"],
-            "current_price": e["current_price"],
-            "currency": e.get("currency", "USD"),
-            "in_stock": e.get("in_stock", True),
-            "pending_changes": len(e.get("pending_changes", [])),
-            "last_updated": e.get("last_updated"),
+async def list_products(_args: dict[str, Any], token: str | None) -> dict[str, Any]:
+    """Catalog overview, joined with pending counts. Forwarded to backend."""
+    try:
+        items = await pricing.list_entries(token=token)
+    except Exception as e:  # noqa: BLE001
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": f"backend unreachable: {e}"}],
         }
-        for e in entries
-    ]
     if not items:
         text = "Catalog is empty."
     else:
         lines = [
-            f"- {it['sku']} · {it['name']} · {it['current_price']:.2f} {it['currency']}"
-            + (f" · {it['pending_changes']} pending" if it['pending_changes'] else "")
-            + ("" if it['in_stock'] else " · OUT OF STOCK")
+            f"- {it['sku']} · {it['name']} · {it['current_price']:.2f} {it.get('currency', 'USD')}"
+            + (f" · {len(it.get('pending_changes') or [])} pending" if it.get("pending_changes") else "")
+            + ("" if it.get("in_stock", True) else " · OUT OF STOCK")
             for it in items
         ]
         text = f"{len(items)} product(s):\n" + "\n".join(lines)
+    # Compress to a list-of-pending-counts shape for the structuredContent
+    # so the wire size is reasonable.
+    compact = [
+        {
+            "sku": it["sku"],
+            "name": it["name"],
+            "current_price": it["current_price"],
+            "currency": it.get("currency", "USD"),
+            "in_stock": it.get("in_stock", True),
+            "pending_changes": len(it.get("pending_changes") or []),
+            "last_updated": it.get("last_updated"),
+        }
+        for it in items
+    ]
     return {
         "content": [{"type": "text", "text": text}],
-        "structuredContent": {"items": items, "count": len(items)},
+        "structuredContent": {"items": compact, "count": len(compact)},
     }
 
 
-async def list_pending_changes(_args: dict[str, Any], _token: str | None) -> dict[str, Any]:
-    """Every pending pricing ticket awaiting review."""
+async def list_pending_changes(_args: dict[str, Any], token: str | None) -> dict[str, Any]:
+    """Every pending pricing ticket awaiting review (backend-owned)."""
     now = int(time.time())
-    pending = pricing.all_pending()
-    items = []
-    for c in pending:
-        age_s = max(0, now - int(c.get("submitted_at") or now))
-        items.append({**c, "age_seconds": age_s})
+    try:
+        pending = await pricing.all_pending(token=token)
+    except Exception as e:  # noqa: BLE001
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": f"backend unreachable: {e}"}],
+        }
+    items = [
+        {**c, "age_seconds": max(0, now - int(c.get("submitted_at") or now))}
+        for c in pending
+    ]
     if not items:
         text = "No pending pricing changes."
     else:
@@ -236,15 +243,14 @@ async def list_pending_changes(_args: dict[str, Any], _token: str | None) -> dic
     }
 
 
-async def approve_pricing_change(args: dict[str, Any], _token: str | None) -> dict[str, Any]:
-    """Approve a pending ticket — mutates the pricing book."""
+async def approve_pricing_change(args: dict[str, Any], token: str | None) -> dict[str, Any]:
     ticket = str(args.get("ticket", "")).strip().upper()
     if not ticket:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": "ticket is required"}],
-        }
-    change = pricing.approve_change(ticket)
+        return {"isError": True, "content": [{"type": "text", "text": "ticket is required"}]}
+    try:
+        change = await pricing.approve_change(ticket, token=token)
+    except Exception as e:  # noqa: BLE001
+        return {"isError": True, "content": [{"type": "text", "text": f"backend unreachable: {e}"}]}
     if not change:
         return {
             "isError": True,
@@ -262,16 +268,15 @@ async def approve_pricing_change(args: dict[str, Any], _token: str | None) -> di
     }
 
 
-async def reject_pricing_change(args: dict[str, Any], _token: str | None) -> dict[str, Any]:
-    """Reject a pending ticket — mutates the pricing book."""
+async def reject_pricing_change(args: dict[str, Any], token: str | None) -> dict[str, Any]:
     ticket = str(args.get("ticket", "")).strip().upper()
     if not ticket:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": "ticket is required"}],
-        }
+        return {"isError": True, "content": [{"type": "text", "text": "ticket is required"}]}
     reason = (args.get("reason") or "").strip() or None
-    change = pricing.reject_change(ticket, reason)
+    try:
+        change = await pricing.reject_change(ticket, reason, token=token)
+    except Exception as e:  # noqa: BLE001
+        return {"isError": True, "content": [{"type": "text", "text": f"backend unreachable: {e}"}]}
     if not change:
         return {
             "isError": True,
@@ -289,33 +294,29 @@ async def reject_pricing_change(args: dict[str, Any], _token: str | None) -> dic
 
 
 async def get_job(args: dict[str, Any], _token: str | None) -> dict[str, Any]:
-    """Fetch a forecast job by id, including the pricing changes it factored."""
+    """Forecast jobs are still frontend-owned (the runner lives here)."""
     job_id = str(args.get("job_id", "")).strip()
     if not job_id:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": "job_id is required"}],
-        }
+        return {"isError": True, "content": [{"type": "text", "text": "job_id is required"}]}
     job = state.jobs.get(job_id)
     if not job:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": f"No job: {job_id}"}],
-        }
+        return {"isError": True, "content": [{"type": "text", "text": f"No job: {job_id}"}]}
     pending_count = len(job.get("pending_pricing") or [])
+    drift_count = len(job.get("current_drifts") or [])
     if job.get("status") == "done":
         r = job.get("result") or {}
         text = (
             f"{job_id} ({job.get('region')}): done · uplift {r.get('uplift_pct')}% "
             f"· baseline {r.get('baseline_units'):,} u · confidence "
-            f"{(r.get('confidence') or 0)*100:.1f}% · drag from {pending_count} "
-            f"pricing change(s): {r.get('pricing_drag_pct')}pp"
+            f"{(r.get('confidence') or 0)*100:.1f}% · pending drag "
+            f"{r.get('pricing_drag_pct')}pp · baseline shift "
+            f"{r.get('baseline_shift_pct')}%"
         )
     else:
         text = (
             f"{job_id} ({job.get('region')}): {job.get('status')} "
             f"({job.get('progress', 0)}% · {job.get('step_label', job.get('step'))}) "
-            f"· factoring {pending_count} pricing change(s)"
+            f"· factoring {pending_count} pending + {drift_count} drifted"
         )
     return {
         "content": [{"type": "text", "text": text}],
@@ -328,28 +329,24 @@ async def get_job(args: dict[str, Any], _token: str | None) -> dict[str, Any]:
             "step_label": job.get("step_label"),
             "started_at": job.get("started_at"),
             "pending_pricing": job.get("pending_pricing") or [],
+            "current_drifts": job.get("current_drifts") or [],
             "result": job.get("result"),
         },
     }
 
 
-async def simulate_pricing_impact(args: dict[str, Any], _token: str | None) -> dict[str, Any]:
-    """What-if: project the marginal drag of a hypothetical pricing change."""
+async def simulate_pricing_impact(args: dict[str, Any], token: str | None) -> dict[str, Any]:
     sku = str(args.get("sku", "")).strip().upper()
-    new_price = args.get("new_price")
     try:
-        new_price = float(new_price)
+        new_price = float(args.get("new_price"))
     except (TypeError, ValueError):
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": "new_price must be a number"}],
-        }
-    sim = pricing.simulate(sku, new_price)
+        return {"isError": True, "content": [{"type": "text", "text": "new_price must be a number"}]}
+    try:
+        sim = await pricing.simulate(sku, new_price, token=token)
+    except Exception as e:  # noqa: BLE001
+        return {"isError": True, "content": [{"type": "text", "text": f"backend unreachable: {e}"}]}
     if not sim:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": f"Unknown SKU: {sku}"}],
-        }
+        return {"isError": True, "content": [{"type": "text", "text": f"Unknown SKU: {sku}"}]}
     text = (
         f"Simulating {sim['sku']} at {sim['hypothetical_price']:.2f} "
         f"(current {sim['current_price']:.2f}, {sim['delta_pct']:+.2f}%): "

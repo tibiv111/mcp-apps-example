@@ -33,7 +33,11 @@ async def emit(job_id: str, event: dict[str, Any]) -> None:
             pass
 
 
-def create_job(region: str, pending_pricing: list[dict[str, Any]] | None = None) -> str:
+def create_job(
+    region: str,
+    pending_pricing: list[dict[str, Any]] | None = None,
+    current_drifts: list[dict[str, Any]] | None = None,
+) -> str:
     """Register a new job in shared state and return its id."""
     region = (region or "GLOBAL").strip().upper() or "GLOBAL"
     job_id = state.new_id("job")
@@ -45,16 +49,27 @@ def create_job(region: str, pending_pricing: list[dict[str, Any]] | None = None)
         "step": "queued",
         "started_at": time.time(),
         "result": None,
-        # Snapshot of pricing changes the model should factor in.
+        # Two-layer pricing snapshot the model factors in:
+        #   pending → uncertainty about future approvals (uplift drag)
+        #   drifts  → approved moves already in effect (baseline shift)
         "pending_pricing": list(pending_pricing or []),
+        "current_drifts": list(current_drifts or []),
     }
     state.job_subscribers[job_id] = []
     trace.record(
         "job.create",
         layer="jobs",
-        summary=f"created job {job_id} (region {region}, {len(pending_pricing or [])} pending pricing change(s))",
+        summary=(
+            f"created job {job_id} (region {region}, "
+            f"{len(pending_pricing or [])} pending, "
+            f"{len(current_drifts or [])} drift)"
+        ),
         correlation_id=job_id,
-        detail={"region": region, "pending_pricing_count": len(pending_pricing or [])},
+        detail={
+            "region": region,
+            "pending_pricing_count": len(pending_pricing or []),
+            "drift_count": len(current_drifts or []),
+        },
     )
     return job_id
 
@@ -92,17 +107,36 @@ async def run_mock_job(job_id: str) -> None:
                 detail={"step": key, "progress": job["progress"]},
             )
 
-        # Synthetic but plausible result. Pending pricing changes are
-        # applied as a simple elasticity drag — a +10% price hike drops
-        # uplift by ~5pp, a -5% cut adds ~2.5pp. Crude but enough that
-        # the forecast result visibly reacts to pricing submissions.
+        # Two-layer pricing model:
+        #   1. Approved drifts shift the baseline. Demand reacts to the
+        #      price level currently in effect. A +16% drift drops
+        #      baseline by ~8% (elasticity 0.5).
+        #   2. Pending changes drag the uplift forecast. They're future
+        #      moves the market hasn't seen yet.
         region = job.get("region", "GLOBAL")
         pending = job.get("pending_pricing", []) or []
-        baseline_units = 18420 + int(secrets.token_bytes(1)[0] * 12.5)
+        drifts = job.get("current_drifts", []) or []
+
+        base_baseline_units = 18420 + int(secrets.token_bytes(1)[0] * 12.5)
         base_uplift = round(2.6 + (secrets.token_bytes(1)[0] / 255) * 1.4, 2)
         confidence = round(0.78 + (secrets.token_bytes(1)[0] / 255) * 0.18, 3)
 
         ELASTICITY = 0.5  # demand response per 1% price move
+
+        # Baseline shift from approved (currently effective) price drift.
+        # Use the mean drift across SKUs so adding more SKUs doesn't
+        # blow the number up linearly.
+        if drifts:
+            mean_drift_pct = sum(d.get("drift_pct", 0) for d in drifts) / len(drifts)
+        else:
+            mean_drift_pct = 0.0
+        baseline_shift_pct = -round(mean_drift_pct * ELASTICITY, 2)  # +price → -demand
+        adjusted_units = int(
+            base_baseline_units * (1.0 + baseline_shift_pct / 100.0)
+        )
+
+        # Uplift drag from pending (forward-looking) changes — sum, not mean,
+        # because each pending change is its own future bet.
         considered: list[dict[str, Any]] = []
         pricing_drag_pct = 0.0
         for change in pending:
@@ -122,10 +156,9 @@ async def run_mock_job(job_id: str) -> None:
                 }
             )
         adjusted_uplift = round(base_uplift - pricing_drag_pct, 2)
-        # Demand drops as uplift drag rises; small, visible effect.
-        adjusted_units = int(baseline_units * (1.0 - (pricing_drag_pct / 100.0) * 0.6))
         # Less certainty when there's a lot of pricing motion in flight.
-        adjusted_confidence = round(max(0.55, confidence - 0.01 * len(considered)), 3)
+        motion = len(considered) + len(drifts)
+        adjusted_confidence = round(max(0.55, confidence - 0.01 * motion), 3)
 
         result = {
             "region": region,
@@ -133,10 +166,16 @@ async def run_mock_job(job_id: str) -> None:
             "baseline_units": adjusted_units,
             "uplift_pct": adjusted_uplift,
             "confidence": adjusted_confidence,
+            # Pending (uplift) layer
             "pricing_drag_pct": round(pricing_drag_pct, 2),
             "considered_pricing_changes": considered,
+            # Approved (baseline) layer
+            "baseline_shift_pct": baseline_shift_pct,
+            "mean_drift_pct": round(mean_drift_pct, 2),
+            "considered_price_drifts": drifts,
+            # Untouched bases for transparency
             "base_uplift_pct": base_uplift,
-            "base_baseline_units": baseline_units,
+            "base_baseline_units": base_baseline_units,
         }
         job["status"] = "done"
         job["progress"] = 100

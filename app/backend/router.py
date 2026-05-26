@@ -18,13 +18,19 @@ from __future__ import annotations
 
 from typing import Any
 
+import asyncio
+import json
+from typing import AsyncIterator
+
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
-from .. import pricing as pricing_book
 from .. import state as app_state
 from ..config import FRONTEND_URL, PROTOCOL_VERSION
+from . import events as backend_events
+from . import pricing as pricing_book
 from .data import CATALOG
 
 router = APIRouter()
@@ -100,7 +106,7 @@ BACKEND_TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_product",
         "title": "Get product",
-        "description": "Fetch catalog entry for a single SKU.",
+        "description": "Fetch catalog entry for a single SKU, joined with pricing state.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -113,71 +119,247 @@ BACKEND_TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_products",
         "title": "List products",
-        "description": "Return all known products in the catalog.",
+        "description": "Return all products with current price and pending change count.",
         "inputSchema": {
             "type": "object",
             "properties": {},
             "additionalProperties": False,
         },
     },
+    {
+        "name": "submit_pricing_change",
+        "title": "Submit pricing change (backend)",
+        "description": "Record a new pending pricing change in the book.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "product": {"type": "string"},
+                "new_price": {"type": "number"},
+            },
+            "required": ["product", "new_price"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "approve_pricing_change",
+        "title": "Approve pricing change (backend)",
+        "description": "Promote a pending ticket to current price and remove from pending.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"ticket": {"type": "string"}},
+            "required": ["ticket"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "reject_pricing_change",
+        "title": "Reject pricing change (backend)",
+        "description": "Remove a pending ticket without applying it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ticket": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["ticket"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_pending_changes",
+        "title": "List pending pricing changes (backend)",
+        "description": "Every queued pricing ticket with delta, age, and status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_pricing_snapshot",
+        "title": "Pricing book snapshot (backend)",
+        "description": "Aggregate counts for dashboards.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_current_drifts",
+        "title": "Current price drifts (backend)",
+        "description": "For each SKU whose price has drifted from seed, return the percentage drift.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "simulate_pricing_impact",
+        "title": "Simulate pricing impact (backend)",
+        "description": "What-if elasticity projection for a hypothetical re-price. Does not persist.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sku": {"type": "string"},
+                "new_price": {"type": "number"},
+            },
+            "required": ["sku", "new_price"],
+            "additionalProperties": False,
+        },
+    },
 ]
+
+
+def _enriched_entry(sku: str) -> dict[str, Any] | None:
+    """CATALOG row joined with the book's current_price + pending changes."""
+    sku = (sku or "").upper()
+    cat = CATALOG.get(sku)
+    if not cat:
+        return None
+    book = pricing_book.get_entry(sku) or {}
+    pending = pricing_book.pending_for_sku(sku)
+    current_price = book.get("current_price", cat["price"])
+    return {
+        "sku": sku,
+        "name": cat["name"],
+        "seed_price": cat["price"],
+        "current_price": current_price,
+        "price": current_price,  # back-compat
+        "currency": cat["currency"],
+        "in_stock": cat.get("in_stock", True),
+        "last_updated": book.get("last_updated", cat.get("last_updated")),
+        "pending_changes": pending,
+        "has_pending": bool(pending),
+        "found": True,
+    }
 
 
 def _tool_get_product(args: dict[str, Any]) -> dict[str, Any]:
     sku = str(args.get("sku", "")).strip().upper()
     if not sku:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": "sku is required"}],
-        }
-    entry = CATALOG.get(sku)
+        return {"isError": True, "content": [{"type": "text", "text": "sku is required"}]}
+    entry = _enriched_entry(sku)
     if not entry:
         return {
             "isError": True,
             "content": [{"type": "text", "text": f"Unknown SKU: {sku}"}],
             "structuredContent": {"sku": sku, "found": False},
         }
-    # Overlay pending pricing changes from the shared book so the catalog
-    # reflects what was submitted in another view.
-    book_entry = pricing_book.get_entry(sku) or {}
-    pending = pricing_book.pending_for_sku(sku)
-    current_price = book_entry.get("current_price", entry["price"])
-    latest_pending = pending[-1] if pending else None
-
-    summary = f"{sku} · {entry['name']} · {current_price} {entry['currency']}"
-    if latest_pending:
+    summary = (
+        f"{sku} · {entry['name']} · {entry['current_price']} {entry['currency']}"
+    )
+    if entry["pending_changes"]:
+        p = entry["pending_changes"][-1]
         summary += (
-            f" · pending {latest_pending['new_price']:.2f} "
-            f"({latest_pending['ticket']}, {latest_pending['status'].replace('_', ' ')})"
+            f" · pending {p['new_price']:.2f} "
+            f"({p['ticket']}, {p['status'].replace('_', ' ')})"
         )
     return {
         "content": [{"type": "text", "text": summary}],
-        "structuredContent": {
-            "sku": sku,
-            "found": True,
-            **entry,
-            "price": current_price,
-            "current_price": current_price,
-            "pending_changes": pending,
-            "has_pending": bool(pending),
-        },
+        "structuredContent": entry,
     }
 
 
 def _tool_list_products(_args: dict[str, Any]) -> dict[str, Any]:
-    items = []
-    for sku, entry in CATALOG.items():
-        pending = pricing_book.pending_for_sku(sku)
-        items.append({"sku": sku, **entry, "pending_changes": pending})
+    items = [_enriched_entry(sku) for sku in CATALOG.keys()]
+    items = [i for i in items if i]
     return {
         "content": [{"type": "text", "text": f"{len(items)} products in catalog"}],
         "structuredContent": {"items": items},
     }
 
 
+def _tool_submit(args: dict[str, Any]) -> dict[str, Any]:
+    product = str(args.get("product", "")).strip() or "UNKNOWN"
+    try:
+        new_price = float(args.get("new_price"))
+    except (TypeError, ValueError):
+        return {"isError": True, "content": [{"type": "text", "text": "new_price must be a number"}]}
+    change = pricing_book.submit_change(product, new_price)
+    return {
+        "content": [{"type": "text", "text": f"Submitted {change['ticket']}"}],
+        "structuredContent": change,
+    }
+
+
+def _tool_approve(args: dict[str, Any]) -> dict[str, Any]:
+    ticket = str(args.get("ticket", "")).strip().upper()
+    if not ticket:
+        return {"isError": True, "content": [{"type": "text", "text": "ticket is required"}]}
+    change = pricing_book.approve_change(ticket)
+    if not change:
+        return {"isError": True, "content": [{"type": "text", "text": f"No pending ticket: {ticket}"}]}
+    return {
+        "content": [{"type": "text", "text": f"Approved {change['ticket']}"}],
+        "structuredContent": change,
+    }
+
+
+def _tool_reject(args: dict[str, Any]) -> dict[str, Any]:
+    ticket = str(args.get("ticket", "")).strip().upper()
+    if not ticket:
+        return {"isError": True, "content": [{"type": "text", "text": "ticket is required"}]}
+    reason = (args.get("reason") or "").strip() or None
+    change = pricing_book.reject_change(ticket, reason)
+    if not change:
+        return {"isError": True, "content": [{"type": "text", "text": f"No pending ticket: {ticket}"}]}
+    return {
+        "content": [{"type": "text", "text": f"Rejected {change['ticket']}"}],
+        "structuredContent": change,
+    }
+
+
+def _tool_list_pending(_args: dict[str, Any]) -> dict[str, Any]:
+    pending = pricing_book.all_pending()
+    return {
+        "content": [{"type": "text", "text": f"{len(pending)} pending change(s)"}],
+        "structuredContent": {"items": pending, "count": len(pending)},
+    }
+
+
+def _tool_snapshot(_args: dict[str, Any]) -> dict[str, Any]:
+    snap = pricing_book.snapshot()
+    return {
+        "content": [{"type": "text", "text": f"{snap['products']} products, {snap['pending_changes']} pending"}],
+        "structuredContent": snap,
+    }
+
+
+def _tool_drifts(_args: dict[str, Any]) -> dict[str, Any]:
+    drifts = pricing_book.all_current_drifts()
+    return {
+        "content": [{"type": "text", "text": f"{len(drifts)} drifted SKU(s)"}],
+        "structuredContent": {"items": drifts, "count": len(drifts)},
+    }
+
+
+def _tool_simulate(args: dict[str, Any]) -> dict[str, Any]:
+    sku = str(args.get("sku", "")).strip().upper()
+    try:
+        new_price = float(args.get("new_price"))
+    except (TypeError, ValueError):
+        return {"isError": True, "content": [{"type": "text", "text": "new_price must be a number"}]}
+    sim = pricing_book.simulate(sku, new_price)
+    if not sim:
+        return {"isError": True, "content": [{"type": "text", "text": f"Unknown SKU: {sku}"}]}
+    return {
+        "content": [{"type": "text", "text": "what-if simulation"}],
+        "structuredContent": sim,
+    }
+
+
 BACKEND_TOOL_HANDLERS: dict[str, Any] = {
     "get_product": _tool_get_product,
     "list_products": _tool_list_products,
+    "submit_pricing_change": _tool_submit,
+    "approve_pricing_change": _tool_approve,
+    "reject_pricing_change": _tool_reject,
+    "list_pending_changes": _tool_list_pending,
+    "get_pricing_snapshot": _tool_snapshot,
+    "get_current_drifts": _tool_drifts,
+    "simulate_pricing_impact": _tool_simulate,
 }
 
 
@@ -233,3 +415,35 @@ async def backend_mcp_endpoint(
         return JSONResponse(_error(req_id, -32601, f"Method not found: {method}"))
     except Exception as e:  # noqa: BLE001
         return JSONResponse(_error(req_id, -32000, f"Server error: {e}"))
+
+
+# ---------------------------------------------------------------------------
+# Pricing event stream — backend's source of truth for live mutations.
+# Public (no auth) because it's a read-only event feed; the frontend's
+# bridge connects here and republishes onto its own /shell/events channel
+# so iframes get live updates regardless of which service issued the
+# mutation.
+# ---------------------------------------------------------------------------
+
+@router.get("/backend/pricing-events")
+async def backend_pricing_events(request: Request) -> EventSourceResponse:
+    queue = backend_events.subscribe()
+
+    async def stream() -> AsyncIterator[dict[str, Any]]:
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": "{}"}
+                    continue
+                yield {
+                    "event": "pricing-event",
+                    "data": json.dumps(event),
+                }
+        finally:
+            backend_events.unsubscribe(queue)
+
+    return EventSourceResponse(stream(), headers={"X-Accel-Buffering": "no"})

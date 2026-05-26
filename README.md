@@ -76,18 +76,52 @@ nav-mock-mcp/
 
 **Adding a new tool**: append a definition to `app/schemas.py:TOOLS`, write a handler in `app/mcp/tools.py`, register it in `TOOL_HANDLERS`. The dispatcher needs no changes.
 
-## Shared pricing book — how the views are coupled
+## Single source of truth — how the views stay in sync
 
-The pricing form, the catalog lookup, the forecast and the dashboard all read and write a single in-process pricing book ([app/pricing.py](app/pricing.py)), seeded from the backend catalog at first access. Submitting a price change is no longer a fire-and-forget echo; the rest of the demo reacts to it.
+The pricing book is the demo's authoritative state. It lives in **one place only**: [app/backend/pricing.py](app/backend/pricing.py), inside the backend MCP service. Every read and every write — from the iframe, from chat, from anywhere — goes through it.
 
-- **`submit_pricing_change`** writes a record into the book (`{ticket, product, previous_price, new_price, delta_pct, status, submitted_at}`) and fans a `pricing-event` notification down every open `/shell/events` SSE listener.
-- **`lookup_product`** (backend MCP) overlays the latest pending change on the catalog entry. The returned text reads `SKU-X12 · Atlas Hedge · 129.00 USD · pending 150.00 (PR-A4, queued for review)` instead of the bare row.
-- **`start_forecast`** snapshots `pricing.all_pending()` at job-creation time. The forecast runner applies a simple elasticity (`Δunits ≈ –0.5 × Δprice%`) so a +16% submission drags uplift by ~8pp, and surfaces the considered changes back in `structuredContent.considered_pricing_changes`.
-- **`/dashboard/snapshot`** aggregates the book + running-job state. The dashboard view fetches on mount and re-fetches on every `pricing-event`.
+```text
+┌─ FRONTEND MCP (what Claude talks to) ────────────────────────────────┐
+│                                                                       │
+│  tool handlers (submit / approve / lookup / start_forecast / …)      │
+│      │                                                                │
+│      ▼                                                                │
+│  app/pricing.py  ──── async HTTP client ────────┐                     │
+│                                                  │                    │
+│  /shell/events ◀── bridge (app/bridge.py) ──────┼─── SSE             │
+│                                                  │                    │
+└──────────────────────────────────────────────────┼────────────────────┘
+                                                   ▼
+┌─ BACKEND MCP (the data service) ─────────────────────────────────────┐
+│                                                                       │
+│  /backend/mcp  ◀── tools/call (submit, approve, list, ...)            │
+│      │                                                                │
+│      ▼                                                                │
+│  app/backend/pricing.py    ← the actual book (single dict)           │
+│      │                                                                │
+│      └──▶ app/backend/events.py ──▶ /backend/pricing-events (SSE)   │
+└───────────────────────────────────────────────────────────────────────┘
+```
 
-Open the catalog view for `SKU-X12` in one tab, submit a $150 change in another, and the catalog row updates in place without a refresh — the iframe-direct `pricing-event` SSE drives the re-fetch.
+**Why it works the way it does:**
 
-This is in-process state by design. In a split deploy the backend and frontend would need to share a real store; the demo's combined-mode default keeps it in `app/pricing.py`.
+- The frontend MCP's `pricing` module is a **thin async HTTP client**. Every tool handler that touches pricing — `submit_pricing_change`, `approve_pricing_change`, `lookup_product`, `list_products`, `start_forecast` (which snapshots `all_pending()` and `all_current_drifts()`), and friends — forwards through it to the backend.
+- Mutations on the backend publish onto [app/backend/events.py](app/backend/events.py), which the [/backend/pricing-events](app/backend/router.py) SSE endpoint streams to subscribers.
+- The frontend runs a **bridge task** ([app/bridge.py](app/bridge.py)) for its entire lifecycle. It subscribes to backend pricing-events and republishes them on `/shell/events` so every open workspace iframe refreshes its catalog / dashboard the moment chat approves a change — and vice versa.
+- In **combined-mode** deploys (single process), the HTTP loopback is just a localhost call; the bridge connects to the same service. In **split-mode** deploys, the same code becomes a real cross-service stream. No deploy-mode branching in handlers.
+
+### The two-layer pricing model the forecast applies
+
+When `start_forecast` snapshots pricing state, it captures **two** lists:
+
+- `pending_pricing` — pricing changes submitted but not yet approved. These are future, uncertain. The forecast model treats them as a drag on **uplift** (`Δuplift = –elasticity × Σ Δprice%`).
+- `current_drifts` — for any SKU whose current price has moved from its seed (i.e. an approval already landed), the model treats this as a shift in the **baseline** (`Δbaseline = –elasticity × mean Δprice%`).
+
+So approving a change moves its effect from "uplift drag" to "baseline shift" — the price rise is now in effect, demand is permanently lower at that price level. Both are visible on the forecast result panel and in `structuredContent`. `simulate_pricing_impact` runs the same elasticity without persisting anything.
+
+### `/dashboard/snapshot`
+
+Aggregates the backend pricing book + the frontend's running-job state. Dashboard view fetches on mount and re-fetches on every bridged `pricing-event` push.
 
 ## SSE through Render's proxy
 

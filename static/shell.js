@@ -330,8 +330,33 @@
           document.getElementById('fr-baseline').textContent   = (r.baseline_units || 0).toLocaleString() + ' u';
           document.getElementById('fr-uplift').textContent     = (r.uplift_pct != null ? '+'+r.uplift_pct+'%' : '—');
           document.getElementById('fr-confidence').textContent = r.confidence != null ? (r.confidence*100).toFixed(1)+'%' : '—';
-          // Pricing factored panel — visible only when the forecast
-          // actually considered submitted pricing changes.
+          // Layer 1: baseline shift from approved drifts (price moves in effect).
+          const baseWrap = document.getElementById('fr-baseline-wrap');
+          const driftsList = document.getElementById('fr-drifts');
+          const drifts = Array.isArray(r.considered_price_drifts) ? r.considered_price_drifts : [];
+          driftsList.innerHTML = '';
+          if (drifts.length) {
+            const shift = r.baseline_shift_pct != null ? r.baseline_shift_pct : 0;
+            const shiftEl = document.getElementById('fr-baseline-shift');
+            shiftEl.textContent = (shift > 0 ? '+' : '') + shift.toFixed(2) + '% baseline';
+            shiftEl.className = 'forecast-pricing-drag ' + (shift < 0 ? 'down' : 'up');
+            drifts.forEach(d => {
+              const row = document.createElement('div');
+              row.className = 'considered-row';
+              const dpct = d.drift_pct != null ? (d.drift_pct > 0 ? '+' : '') + d.drift_pct + '%' : '—';
+              row.innerHTML =
+                '<span class="considered-ticket">approved</span>' +
+                '<span class="considered-sku">' + (d.sku || '—') + '</span>' +
+                '<span class="considered-delta ' + (d.drift_pct > 0 ? 'up' : 'down') + '">' + dpct + '</span>' +
+                '<span class="considered-drag">' + Number(d.seed_price || 0).toFixed(2) + ' → ' + Number(d.current_price || 0).toFixed(2) + '</span>';
+              driftsList.appendChild(row);
+            });
+            baseWrap.classList.remove('hidden');
+          } else {
+            baseWrap.classList.add('hidden');
+          }
+
+          // Layer 2: uplift drag from pending changes (future, uncertain).
           const wrap = document.getElementById('fr-pricing-wrap');
           const considered = Array.isArray(r.considered_pricing_changes) ? r.considered_pricing_changes : [];
           const list = document.getElementById('fr-considered');

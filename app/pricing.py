@@ -1,265 +1,166 @@
 """
-Shared pricing book — the cross-cutting state that ties together pricing
-submissions, catalog lookups, and forecasts.
+Frontend-side pricing client.
 
-Why this module exists
-----------------------
-The original demo had three disconnected flows: a pricing form that echoed
-a ticket id, a catalog lookup that always returned the same canned price,
-and a forecast that generated independent random numbers. Submitting a
-pricing change had no effect on either of the other two views. That made
-the demo feel hollow.
+The pricing book lives on the BACKEND MCP service ([app/backend/pricing.py]).
+Every read and every write goes through this client, which posts JSON-RPC
+`tools/call` requests to the backend over HTTP. In split deploys that's a
+real network hop; in combined-mode deploys it's a localhost call.
 
-`submit_change` writes into a single in-memory book. `get_entry` /
-`pending_for_sku` / `all_pending` are read from by both the backend's
-catalog tool (so a lookup shows pending price proposals) and the forecast
-runner (so a 10% price hike depresses uplift via a simple elasticity).
+Why the indirection — single source of truth. The frontend MCP (the
+service Claude talks to) is a thin proxy: tool handlers that touch
+pricing data forward to this client, which forwards to the backend.
+The book exists in exactly one process, and any mutation announces
+itself via the backend's `/backend/pricing-events` SSE stream — which
+the frontend's bridge republishes onto `/shell/events` so live iframes
+update without polling.
 
-Every mutation also fans out a live event to open iframes through
-`state.shell_event_subscribers` and drops a trace record for /diagnostics.
-That's how the catalog view auto-refreshes when you submit a price change
-in a different tab.
+All functions are async because they do HTTP. Callers are MCP tool
+handlers (already async) and the dashboard snapshot endpoint
+(also async), so awaiting is natural.
 
-Demo simplification
--------------------
-The book lives in-process. In split-deploy mode (backend on a separate
-service), the frontend's submit and the backend's lookup wouldn't see the
-same state — for that you'd need a database, a Redis pub/sub, or routing
-backend lookups through the frontend. The combined-deploy default keeps
-everything in one process, which is what most reviewers will try first.
+Auth: a bearer token is required by the backend. Callers should pass
+the user's MCP token through; for service-to-service calls without a
+user (e.g. lifespan bridge bootstrap), pass `service_token()`.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import secrets
-import time
 from typing import Any
 
-from . import state, trace
-from .backend.data import CATALOG
+import httpx
 
-# sku -> { sku, name, current_price, currency, pending_changes: [change, ...] }
-# Seeded lazily from the backend catalog on first access.
-_book: dict[str, dict[str, Any]] = {}
+from . import state
+from .config import BACKEND_URL
 
-
-def _ensure_seeded() -> None:
-    if _book:
-        return
-    for sku, entry in CATALOG.items():
-        _book[sku] = {
-            "sku": sku,
-            "name": entry["name"],
-            "current_price": float(entry["price"]),
-            "currency": entry.get("currency", "USD"),
-            "in_stock": entry.get("in_stock", True),
-            "last_updated": entry.get("last_updated"),
-            "pending_changes": [],
-        }
+# Single service token the backend will accept for frontend-initiated
+# operations that aren't tied to a user request (currently none — every
+# call we make is in response to a user MCP request that already has a
+# bearer). Kept here for future use and for tests.
+_SERVICE_TOKEN = "svc-" + secrets.token_hex(8)
 
 
-def get_entry(sku: str) -> dict[str, Any] | None:
-    _ensure_seeded()
-    return _book.get((sku or "").upper())
+def service_token() -> str:
+    """Returns the frontend's service token, registering it on first use."""
+    state.issued_tokens.add(_SERVICE_TOKEN)
+    return _SERVICE_TOKEN
 
 
-def list_entries() -> list[dict[str, Any]]:
-    _ensure_seeded()
-    return list(_book.values())
+async def _call(name: str, args: dict[str, Any] | None, token: str | None) -> dict[str, Any]:
+    """
+    Generic backend MCP tool call. Returns the result dict (with
+    `content`, `structuredContent`, optional `isError`). Raises on
+    transport failure.
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": args or {}},
+    }
+    headers: dict[str, str] = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{BACKEND_URL}/backend/mcp",
+            json=payload,
+            headers=headers,
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"backend pricing call '{name}' returned HTTP {resp.status_code}"
+        )
+    body = resp.json()
+    if "error" in body:
+        raise RuntimeError(
+            f"backend pricing call '{name}' returned error: {body['error'].get('message')}"
+        )
+    return body.get("result") or {}
 
 
-def pending_for_sku(sku: str) -> list[dict[str, Any]]:
-    entry = get_entry(sku)
-    return list(entry["pending_changes"]) if entry else []
+def _structured(result: dict[str, Any]) -> dict[str, Any]:
+    """Pull structuredContent from a tool result, normalizing to {}."""
+    return result.get("structuredContent") or {}
 
 
-def all_pending() -> list[dict[str, Any]]:
-    _ensure_seeded()
-    out: list[dict[str, Any]] = []
-    for entry in _book.values():
-        out.extend(entry["pending_changes"])
-    return out
+# ── reads ──────────────────────────────────────────────────────────────
 
-
-def find_change(ticket: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """Locate a pending change by ticket id. Returns (entry, change) or None."""
-    _ensure_seeded()
-    ticket = (ticket or "").strip().upper()
-    if not ticket:
+async def get_entry(sku: str, token: str | None = None) -> dict[str, Any] | None:
+    res = await _call("get_product", {"sku": sku}, token or service_token())
+    sc = _structured(res)
+    if res.get("isError") or sc.get("found") is False:
         return None
-    for entry in _book.values():
-        for change in entry.get("pending_changes", []):
-            if change.get("ticket", "").upper() == ticket:
-                return entry, change
-    return None
+    return sc
 
 
-def approve_change(ticket: str) -> dict[str, Any] | None:
-    """
-    Approve a pending change. Sets entry.current_price to the new price,
-    removes the change from pending, emits a pricing-event so live views
-    re-fetch. Returns the approved change record (with status='approved')
-    or None if no such ticket.
-    """
-    found = find_change(ticket)
-    if not found:
+async def list_entries(token: str | None = None) -> list[dict[str, Any]]:
+    res = await _call("list_products", {}, token or service_token())
+    return list(_structured(res).get("items") or [])
+
+
+async def pending_for_sku(sku: str, token: str | None = None) -> list[dict[str, Any]]:
+    entry = await get_entry(sku, token=token)
+    return list(entry.get("pending_changes") or []) if entry else []
+
+
+async def all_pending(token: str | None = None) -> list[dict[str, Any]]:
+    res = await _call("list_pending_changes", {}, token or service_token())
+    return list(_structured(res).get("items") or [])
+
+
+async def all_current_drifts(token: str | None = None) -> list[dict[str, Any]]:
+    res = await _call("get_current_drifts", {}, token or service_token())
+    return list(_structured(res).get("items") or [])
+
+
+async def snapshot(token: str | None = None) -> dict[str, Any]:
+    res = await _call("get_pricing_snapshot", {}, token or service_token())
+    return _structured(res)
+
+
+async def simulate(sku: str, new_price: float, token: str | None = None) -> dict[str, Any] | None:
+    res = await _call(
+        "simulate_pricing_impact",
+        {"sku": sku, "new_price": new_price},
+        token or service_token(),
+    )
+    if res.get("isError"):
         return None
-    entry, change = found
-    entry["current_price"] = float(change["new_price"])
-    entry["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    entry["pending_changes"] = [
-        c for c in entry["pending_changes"] if c.get("ticket") != change.get("ticket")
-    ]
-    change = {**change, "status": "approved", "decided_at": int(time.time())}
-    _notify("pricing.approved", change)
-    return change
+    return _structured(res)
 
 
-def reject_change(ticket: str, reason: str | None = None) -> dict[str, Any] | None:
-    """
-    Reject a pending change. Removes it from pending without touching the
-    current price. Emits a pricing-event so live views re-fetch. Returns
-    the rejected change record (with status='rejected') or None.
-    """
-    found = find_change(ticket)
-    if not found:
+# ── writes ─────────────────────────────────────────────────────────────
+
+async def submit_change(product: str, new_price: float, token: str | None = None) -> dict[str, Any]:
+    res = await _call(
+        "submit_pricing_change",
+        {"product": product, "new_price": new_price},
+        token or service_token(),
+    )
+    return _structured(res)
+
+
+async def approve_change(ticket: str, token: str | None = None) -> dict[str, Any] | None:
+    res = await _call(
+        "approve_pricing_change",
+        {"ticket": ticket},
+        token or service_token(),
+    )
+    if res.get("isError"):
         return None
-    entry, change = found
-    entry["pending_changes"] = [
-        c for c in entry["pending_changes"] if c.get("ticket") != change.get("ticket")
-    ]
-    change = {
-        **change,
-        "status": "rejected",
-        "decided_at": int(time.time()),
-        "reason": (reason or "").strip() or None,
-    }
-    _notify("pricing.rejected", change)
-    return change
+    return _structured(res)
 
 
-# Mirrors the ELASTICITY constant in jobs/runner.py — kept in sync by hand.
-# If you tweak the forecast model, update both.
-_FORECAST_ELASTICITY = 0.5
-
-
-def simulate(sku: str, new_price: float) -> dict[str, Any] | None:
-    """
-    What-if: project the marginal uplift drag if `sku` were re-priced at
-    `new_price`. Doesn't persist anything — just runs the same elasticity
-    the forecast runner applies, so chat can answer "what would this do?"
-    without polluting the pending queue.
-    """
-    entry = get_entry(sku)
-    if entry is None:
+async def reject_change(ticket: str, reason: str | None = None, token: str | None = None) -> dict[str, Any] | None:
+    args: dict[str, Any] = {"ticket": ticket}
+    if reason:
+        args["reason"] = reason
+    res = await _call(
+        "reject_pricing_change",
+        args,
+        token or service_token(),
+    )
+    if res.get("isError"):
         return None
-    previous = float(entry["current_price"])
-    new = float(new_price)
-    delta_pct = (
-        round(((new - previous) / previous) * 100.0, 2) if previous else None
-    )
-    drag_pct = round((delta_pct or 0) * _FORECAST_ELASTICITY, 2)
-    existing_drag = round(
-        sum(
-            (c.get("delta_pct") or 0) * _FORECAST_ELASTICITY
-            for c in all_pending()
-        ),
-        2,
-    )
-    return {
-        "sku": entry["sku"],
-        "name": entry["name"],
-        "current_price": previous,
-        "hypothetical_price": new,
-        "delta_pct": delta_pct,
-        "uplift_drag_pct": drag_pct,
-        "existing_pending_drag_pct": existing_drag,
-        "combined_drag_pct": round(existing_drag + drag_pct, 2),
-    }
-
-
-def submit_change(product: str, new_price: float) -> dict[str, Any]:
-    """
-    Record a pricing change against the book. Returns the change record.
-    Also fans live updates to open iframes and to /diagnostics.
-    """
-    _ensure_seeded()
-    sku = (product or "").strip().upper() or "UNKNOWN"
-    entry = _book.get(sku)
-    if entry is None:
-        # SKU not in catalog — create a stub so the rest of the demo works.
-        entry = {
-            "sku": sku,
-            "name": product,
-            "current_price": float(new_price),
-            "currency": "USD",
-            "in_stock": True,
-            "last_updated": None,
-            "pending_changes": [],
-        }
-        _book[sku] = entry
-
-    previous_price = float(entry["current_price"])
-    new_price_f = float(new_price)
-    delta_pct = (
-        round(((new_price_f - previous_price) / previous_price) * 100.0, 2)
-        if previous_price
-        else None
-    )
-
-    change = {
-        "ticket": "PR-" + secrets.token_hex(2).upper(),
-        "product": sku,
-        "name": entry["name"],
-        "previous_price": previous_price,
-        "new_price": new_price_f,
-        "delta_pct": delta_pct,
-        "status": "queued_for_review",
-        "submitted_at": int(time.time()),
-    }
-    entry["pending_changes"].append(change)
-
-    _notify("pricing.submitted", change)
-    return change
-
-
-def snapshot() -> dict[str, Any]:
-    """Aggregate view for the dashboard."""
-    _ensure_seeded()
-    entries = list(_book.values())
-    pending = all_pending()
-    return {
-        "products": len(entries),
-        "pending_changes": len(pending),
-        "recent_pending": pending[-5:][::-1],
-        "in_stock": sum(1 for e in entries if e.get("in_stock")),
-        "out_of_stock": sum(1 for e in entries if not e.get("in_stock")),
-    }
-
-
-# ── Live fan-out ────────────────────────────────────────────────────────
-
-def _notify(event_type: str, payload: dict[str, Any]) -> None:
-    """
-    Trace the event and push to every open /shell/events listener so live
-    iframes refresh their catalog/dashboard views without a poll.
-    """
-    trace.record(
-        "pricing.event",
-        layer="resource",
-        summary=f"{event_type}: {payload.get('product', '')} {payload.get('new_price', '')}",
-        correlation_id=payload.get("ticket"),
-        detail={"type": event_type, "payload": payload},
-    )
-
-    sse_payload = {
-        "event": "pricing-event",
-        "data": json.dumps({"type": event_type, "payload": payload}),
-    }
-    for q in list(state.shell_event_subscribers):
-        try:
-            q.put_nowait(sse_payload)
-        except asyncio.QueueFull:
-            pass
+    return _structured(res)

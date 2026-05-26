@@ -8,10 +8,15 @@ just calls it.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from typing import AsyncIterator
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from . import bridge
 from .admin.router import router as admin_router
 from .backend.router import router as backend_router
 from .config import BASE_URL, SERVER_NAME, SERVER_VERSION, STATIC_DIR
@@ -22,8 +27,34 @@ from .oauth.router import router as oauth_router
 from .ui.router import router as ui_router
 
 
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """
+    Spin the pricing-event bridge for the duration of the app's lifecycle.
+
+    The bridge connects to the backend MCP's `/backend/pricing-events`
+    SSE stream and republishes events to every iframe via the frontend's
+    `/shell/events`. Without it, a chat-side approve would mutate the
+    backend's book but the open workspace UI wouldn't notice until the
+    user clicked something.
+    """
+    stop = asyncio.Event()
+    task = asyncio.create_task(bridge.run_bridge(stop), name="pricing-bridge")
+    try:
+        yield
+    finally:
+        stop.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="NAV AI Mock MCP", version=SERVER_VERSION)
+    app = FastAPI(
+        title="NAV AI Mock MCP",
+        version=SERVER_VERSION,
+        lifespan=_lifespan,
+    )
 
     # Permissive CORS so the iframe (hosted on *.claudemcpcontent.com) can
     # talk to /jobs/{id}/events and /static/*. This is a mock; tighten for

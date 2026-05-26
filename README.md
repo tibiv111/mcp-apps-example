@@ -63,6 +63,23 @@ nav-mock-mcp/
 
 **Adding a new tool**: append a definition to `app/schemas.py:TOOLS`, write a handler in `app/mcp/tools.py`, register it in `TOOL_HANDLERS`. The dispatcher needs no changes.
 
+## Shared pricing book — how the views are coupled
+
+The pricing form, the catalog lookup, the forecast and the dashboard all read and write a single in-process pricing book ([app/pricing.py](app/pricing.py)), seeded from the backend catalog at first access. Submitting a price change is no longer a fire-and-forget echo; the rest of the demo reacts to it.
+
+- **`submit_pricing_change`** writes a record into the book (`{ticket, product, previous_price, new_price, delta_pct, status, submitted_at}`) and fans a `pricing-event` notification down every open `/shell/events` SSE listener.
+- **`lookup_product`** (backend MCP) overlays the latest pending change on the catalog entry. The returned text reads `SKU-X12 · Atlas Hedge · 129.00 USD · pending 150.00 (PR-A4, queued for review)` instead of the bare row.
+- **`start_forecast`** snapshots `pricing.all_pending()` at job-creation time. The forecast runner applies a simple elasticity (`Δunits ≈ –0.5 × Δprice%`) so a +16% submission drags uplift by ~8pp, and surfaces the considered changes back in `structuredContent.considered_pricing_changes`.
+- **`/dashboard/snapshot`** aggregates the book + running-job state. The dashboard view fetches on mount and re-fetches on every `pricing-event`.
+
+Open the catalog view for `SKU-X12` in one tab, submit a $150 change in another, and the catalog row updates in place without a refresh — the iframe-direct `pricing-event` SSE drives the re-fetch.
+
+This is in-process state by design. In a split deploy the backend and frontend would need to share a real store; the demo's combined-mode default keeps it in `app/pricing.py`.
+
+## SSE through Render's proxy
+
+Render's free-tier reverse proxy buffers SSE responses by default, which made `/diagnostics` and `/shell/events` feel laggy or batched. Every SSE endpoint now sets `X-Accel-Buffering: no` on the response so events stream through immediately. If you're hosting elsewhere and SSE still feels slow, this is the header to check first.
+
 ## Three things the demo proves at runtime
 
 These are the moments that distinguish a working MCP Apps implementation from a regular tool-result app. Open `/diagnostics` in a second tab while doing any of them — every layer lights up on the timeline.

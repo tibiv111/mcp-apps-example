@@ -89,7 +89,7 @@ async def shell_events(request: Request) -> EventSourceResponse:
                 summary=f"iframe /shell/events listener closed (remaining: {len(state.shell_event_subscribers)})",
             )
 
-    return EventSourceResponse(stream())
+    return EventSourceResponse(stream(), headers={"X-Accel-Buffering": "no"})
 
 
 def _push_shell_event(event_name: str, data: dict[str, Any]) -> int:

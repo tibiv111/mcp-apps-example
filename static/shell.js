@@ -330,6 +330,32 @@
           document.getElementById('fr-baseline').textContent   = (r.baseline_units || 0).toLocaleString() + ' u';
           document.getElementById('fr-uplift').textContent     = (r.uplift_pct != null ? '+'+r.uplift_pct+'%' : '—');
           document.getElementById('fr-confidence').textContent = r.confidence != null ? (r.confidence*100).toFixed(1)+'%' : '—';
+          // Pricing factored panel — visible only when the forecast
+          // actually considered submitted pricing changes.
+          const wrap = document.getElementById('fr-pricing-wrap');
+          const considered = Array.isArray(r.considered_pricing_changes) ? r.considered_pricing_changes : [];
+          const list = document.getElementById('fr-considered');
+          list.innerHTML = '';
+          if (considered.length) {
+            const drag = r.pricing_drag_pct != null ? r.pricing_drag_pct : 0;
+            const dragEl = document.getElementById('fr-drag');
+            dragEl.textContent = (drag > 0 ? '−' : '+') + Math.abs(drag).toFixed(2) + ' pp uplift';
+            dragEl.className = 'forecast-pricing-drag ' + (drag > 0 ? 'down' : 'up');
+            considered.forEach(c => {
+              const row = document.createElement('div');
+              row.className = 'considered-row';
+              const dpct = c.delta_pct != null ? (c.delta_pct > 0 ? '+' : '') + c.delta_pct + '%' : '—';
+              row.innerHTML =
+                '<span class="considered-ticket">' + (c.ticket || '—') + '</span>' +
+                '<span class="considered-sku">' + (c.product || '—') + '</span>' +
+                '<span class="considered-delta ' + (c.delta_pct > 0 ? 'up' : 'down') + '">' + dpct + '</span>' +
+                '<span class="considered-drag">→ ' + (c.uplift_drag_pct != null ? (c.uplift_drag_pct > 0 ? '−' : '+') + Math.abs(c.uplift_drag_pct).toFixed(2) + ' pp' : '—') + '</span>';
+              list.appendChild(row);
+            });
+            wrap.classList.remove('hidden');
+          } else {
+            wrap.classList.add('hidden');
+          }
           document.getElementById('forecast-result').classList.remove('hidden');
           src.close(); currentSource = null;
           btn.disabled = false; btn.textContent = 'Start forecast';
@@ -351,7 +377,156 @@
     }
   };
 
+  // ── Dashboard (live snapshot from /dashboard/snapshot) ──
+  let _dashboardActive = false;
+  function _fmtTime(epoch){
+    if (!epoch) return '—';
+    const d = new Date(epoch * 1000);
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    const ss = String(d.getSeconds()).padStart(2,'0');
+    return hh + ':' + mm + ':' + ss;
+  }
+  async function fetchDashboardSnapshot(){
+    try {
+      const r = await fetch(BASE_URL + '/dashboard/snapshot', {cache:'no-store'});
+      if (!r.ok) return null;
+      return await r.json();
+    } catch(_) { return null; }
+  }
+  function renderDashboard(snap){
+    if (!snap) return;
+    document.getElementById('dash-products').textContent = snap.products;
+    document.getElementById('dash-stock').textContent =
+      snap.in_stock + ' in stock · ' + snap.out_of_stock + ' out';
+    document.getElementById('dash-stock').className = 'delta ' + (snap.out_of_stock > 0 ? 'down' : 'up');
+    document.getElementById('dash-pending').textContent = snap.pending_pricing_changes;
+    document.getElementById('dash-pending-delta').textContent =
+      snap.pending_pricing_changes > 0 ? 'awaiting review' : 'queue clear';
+    document.getElementById('dash-pending-delta').className =
+      'delta ' + (snap.pending_pricing_changes > 0 ? 'up' : 'down');
+    document.getElementById('dash-jobs').textContent = snap.jobs_total;
+    document.getElementById('dash-jobs-running').textContent =
+      snap.jobs_running + ' running · ' + snap.jobs_done + ' done';
+    document.getElementById('dash-jobs-running').className =
+      'delta ' + (snap.jobs_running > 0 ? 'up' : 'down');
+    document.getElementById('dash-now').textContent = _fmtTime(snap.now);
+
+    const pending = snap.recent_pending || [];
+    const pf = document.getElementById('dash-pending-feed');
+    pf.innerHTML = '';
+    if (pending.length){
+      pending.forEach(p => {
+        const tr = document.createElement('tr');
+        const dpct = p.delta_pct != null ? (p.delta_pct > 0 ? '+' : '') + p.delta_pct + '%' : '';
+        tr.innerHTML =
+          '<td>' + _fmtTime(p.submitted_at) + '</td>' +
+          '<td>' + (p.product || '—') + ' · ' +
+            Number(p.previous_price || 0).toFixed(2) + ' → ' +
+            Number(p.new_price || 0).toFixed(2) +
+            ' <span style="color:var(--text-3)">' + dpct + '</span></td>' +
+          '<td>' + (p.ticket || '—') + ' · ' + (p.status || 'pending').replace(/_/g,' ') + '</td>';
+        pf.appendChild(tr);
+      });
+    } else {
+      pf.innerHTML = '<tr><td colspan="3" style="color:var(--text-3); font-style: italic;">No pending pricing changes yet. Submit one from the pricing view.</td></tr>';
+    }
+    document.getElementById('dash-pending-meta').textContent = pending.length + ' shown';
+
+    const jobs = snap.recent_jobs || [];
+    const jf = document.getElementById('dash-jobs-feed');
+    jf.innerHTML = '';
+    if (jobs.length){
+      jobs.forEach(j => {
+        const tr = document.createElement('tr');
+        const note = j.pending_pricing_count > 0
+          ? ' · factoring ' + j.pending_pricing_count + ' price chg'
+          : '';
+        tr.innerHTML =
+          '<td>' + _fmtTime(j.started_at) + '</td>' +
+          '<td>Forecast · ' + (j.region || '—') + note + '</td>' +
+          '<td>' + j.id + ' · ' + (j.status || '—') +
+            (j.status === 'running' ? ' (' + (j.progress || 0) + '%)' : '') + '</td>';
+        jf.appendChild(tr);
+      });
+    } else {
+      jf.innerHTML = '<tr><td colspan="3" style="color:var(--text-3); font-style: italic;">No forecast jobs yet. Start one from the forecast view.</td></tr>';
+    }
+    document.getElementById('dash-jobs-meta').textContent = jobs.length + ' shown';
+  }
+  // Public — called from the SSE pricing-event handler. Only does work
+  // when the dashboard view is on screen.
+  window.refreshDashboardIfShowing = async function(){
+    if (!_dashboardActive) return;
+    const snap = await fetchDashboardSnapshot();
+    if (snap) renderDashboard(snap);
+  };
+  // Pull a fresh snapshot every time the dashboard view becomes active.
+  const _showBase = window.show;
+  window.show = function(name){
+    _showBase(name);
+    _dashboardActive = (name === 'dashboard');
+    if (_dashboardActive) {
+      fetchDashboardSnapshot().then(s => { if (s) renderDashboard(s); });
+    }
+  };
+
   // ── Catalog (calls backend MCP via the frontend's lookup_product tool) ──
+  function renderCatalogReceipt(data){
+    document.getElementById('c-sku').textContent      = data.sku || '—';
+    document.getElementById('c-name').textContent     = data.name || '—';
+    const price = (data.current_price != null ? data.current_price : data.price);
+    document.getElementById('c-price').textContent    = price != null ? Number(price).toFixed(2) : '—';
+    document.getElementById('c-currency').textContent = data.currency || '—';
+    document.getElementById('c-stock').textContent    = data.in_stock === true ? 'yes' : data.in_stock === false ? 'no' : '—';
+    document.getElementById('c-updated').textContent  = data.last_updated || '—';
+    document.getElementById('c-source').textContent   = data.source || 'unknown';
+
+    const wrap = document.getElementById('c-pending-wrap');
+    const list = document.getElementById('c-pending-list');
+    const pending = Array.isArray(data.pending_changes) ? data.pending_changes : [];
+    list.innerHTML = '';
+    if (!pending.length) {
+      wrap.classList.add('hidden');
+      return;
+    }
+    pending.slice().reverse().forEach(p => {
+      const row = document.createElement('div');
+      row.className = 'pending-row';
+      const dpct = p.delta_pct != null ? (p.delta_pct > 0 ? '+' : '') + p.delta_pct + '%' : '—';
+      const dir  = p.delta_pct != null && p.delta_pct > 0 ? 'up' : 'down';
+      row.innerHTML =
+        '<span class="pending-ticket">' + (p.ticket || '—') + '</span>' +
+        '<span class="pending-prices">' +
+          '<span class="prev">' + Number(p.previous_price || 0).toFixed(2) + '</span>' +
+          '<span class="arrow">→</span>' +
+          '<span class="next">' + Number(p.new_price || 0).toFixed(2) + '</span>' +
+        '</span>' +
+        '<span class="pending-delta ' + dir + '">' + dpct + '</span>' +
+        '<span class="pending-status">' + (p.status || 'pending').replace(/_/g, ' ') + '</span>';
+      list.appendChild(row);
+    });
+    wrap.classList.remove('hidden');
+  }
+
+  // Re-fetch the catalog row when the pricing book changes for the SKU
+  // currently displayed. Called from the /shell/events handler below.
+  async function refreshCatalogIfShowing(sku){
+    if (!lastSelection.catalog) return;
+    if ((lastSelection.catalog.sku || '').toUpperCase() !== (sku || '').toUpperCase()) return;
+    try {
+      const res = await sendRequest('tools/call', {
+        name: 'lookup_product',
+        arguments: { sku: lastSelection.catalog.sku }
+      });
+      const data = (res && res.structuredContent) || {};
+      if (data && data.found !== false) {
+        lastSelection.catalog = data;
+        renderCatalogReceipt(data);
+      }
+    } catch (_) { /* best effort */ }
+  }
+
   window.lookupProduct = async function(){
     const btn = document.getElementById('lookup-btn');
     const sku = document.getElementById('sku').value.trim().toUpperCase();
@@ -373,13 +548,7 @@
         return;
       }
       lastSelection.catalog = data;
-      document.getElementById('c-sku').textContent      = data.sku || sku;
-      document.getElementById('c-name').textContent     = data.name || '—';
-      document.getElementById('c-price').textContent    = data.price != null ? Number(data.price).toFixed(2) : '—';
-      document.getElementById('c-currency').textContent = data.currency || '—';
-      document.getElementById('c-stock').textContent    = data.in_stock === true ? 'yes' : data.in_stock === false ? 'no' : '—';
-      document.getElementById('c-updated').textContent  = data.last_updated || '—';
-      document.getElementById('c-source').textContent   = data.source || 'unknown';
+      renderCatalogReceipt(data);
       ok.classList.remove('hidden');
     } catch (e) {
       document.getElementById('c-error').textContent = (e && e.message) || String(e);
@@ -636,6 +805,18 @@
     });
     shellSrc.addEventListener('shell-update', (e) => {
       try { applyShellUpdate(JSON.parse(e.data)); } catch(_){}
+    });
+    // Live pricing-book mutations from the server. The catalog view auto-
+    // re-fetches if the change touches the SKU it's currently showing, and
+    // the dashboard re-pulls its snapshot if it's the active view.
+    shellSrc.addEventListener('pricing-event', (e) => {
+      try {
+        const ev = JSON.parse(e.data);
+        const sku = ev && ev.payload && ev.payload.product;
+        diagNote('ui.pricing-event', 'iframe received pricing-event ' + (ev.type || ''), ev, ev && ev.payload && ev.payload.ticket);
+        if (sku) refreshCatalogIfShowing(sku);
+        if (typeof refreshDashboardIfShowing === 'function') refreshDashboardIfShowing();
+      } catch(_){}
     });
     shellSrc.addEventListener('error', () => { /* auto-retry */ });
   } catch (e) {

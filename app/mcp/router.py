@@ -128,7 +128,7 @@ async def mcp_listener(request: Request) -> EventSourceResponse:
                 summary=f"GET /mcp listener closed (remaining: {len(state.mcp_subscribers)})",
             )
 
-    return EventSourceResponse(stream())
+    return EventSourceResponse(stream(), headers={"X-Accel-Buffering": "no"})
 
 
 @router.delete("/mcp")

@@ -38,6 +38,13 @@
     <div class="row"><span class="k">In stock</span><span class="v" id="c-stock">—</span></div>
     <div class="row"><span class="k">Last updated</span><span class="v" id="c-updated">—</span></div>
     <div class="row"><span class="k">Source</span><span class="v" id="c-source" style="font-family:var(--font-mono);font-size:11px;color:var(--text-2)">—</span></div>
+
+    {# Pending pricing changes from the shared book. Auto-refreshes when
+       a new submit lands via /shell/events. #}
+    <div id="c-pending-wrap" class="pending-block hidden">
+      <div class="pending-head">Pending pricing changes</div>
+      <div id="c-pending-list" class="pending-list"></div>
+    </div>
     <div class="result-actions" style="padding:14px 16px 16px">
       <div class="discuss-row">
         <button class="discuss" id="discuss-catalog" onclick="discussCatalog()">

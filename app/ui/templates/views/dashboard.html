@@ -4,21 +4,25 @@
     <span class="sep">/</span><span>dashboard</span>
   </div>
   <h1 class="view-title">Desk overview</h1>
-  <p class="view-lede">Snapshot of fund NAV, AUM and notable activity. All figures EOD, USD.</p>
-  <div class="kpis">
-    <div class="kpi"><div class="label">NAV / SHARE</div><div class="value">$104.82</div><div class="delta up">+0.34%</div></div>
-    <div class="kpi"><div class="label">AUM</div><div class="value">$2.41 B</div><div class="delta up">+1.2%</div></div>
-    <div class="kpi"><div class="label">DAY P&amp;L</div><div class="value">+$3.18 M</div><div class="delta up">+0.13%</div></div>
-    <div class="kpi"><div class="label">EXPOSURE</div><div class="value">72.4%</div><div class="delta down">−2.1%</div></div>
+  <p class="view-lede">Live snapshot pulled from <code style="font-family:var(--font-mono);color:var(--accent)">/dashboard/snapshot</code>. Updates on every pricing or forecast event.</p>
+  <div class="kpis" id="dash-kpis">
+    <div class="kpi"><div class="label">Products tracked</div><div class="value" id="dash-products">—</div><div class="delta" id="dash-stock">—</div></div>
+    <div class="kpi"><div class="label">Pending price changes</div><div class="value" id="dash-pending">—</div><div class="delta" id="dash-pending-delta">—</div></div>
+    <div class="kpi"><div class="label">Forecast jobs</div><div class="value" id="dash-jobs">—</div><div class="delta" id="dash-jobs-running">—</div></div>
+    <div class="kpi"><div class="label">Last update</div><div class="value" id="dash-now" style="font-size:22px">—</div><div class="delta" id="dash-now-rel">just now</div></div>
   </div>
 
   <div class="panel">
-    <h4>Recent activity<span class="meta">last 8h</span></h4>
-    <table class="feed">
-      <tr><td>14:32</td><td>Pricing change · SKU-X12 → $129.00</td><td>PR-9A · queued</td></tr>
-      <tr><td>13:08</td><td>Forecast job · region APAC</td><td>JOB-72 · done</td></tr>
-      <tr><td>11:54</td><td>Rebalance · vector_4 +1.8 bp</td><td>committed</td></tr>
-      <tr><td>09:21</td><td>Risk check · scenario_macro_v3</td><td>passed</td></tr>
+    <h4>Recent pricing submissions<span class="meta" id="dash-pending-meta">—</span></h4>
+    <table class="feed" id="dash-pending-feed">
+      <tr><td colspan="3" style="color:var(--text-3); font-style: italic;">No pending pricing changes yet. Submit one from the pricing view.</td></tr>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h4>Recent forecast jobs<span class="meta" id="dash-jobs-meta">—</span></h4>
+    <table class="feed" id="dash-jobs-feed">
+      <tr><td colspan="3" style="color:var(--text-3); font-style: italic;">No forecast jobs yet. Start one from the forecast view.</td></tr>
     </table>
   </div>
 </section>

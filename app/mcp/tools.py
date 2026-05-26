@@ -17,13 +17,11 @@ Each handler returns `{content: [...], structuredContent: {...}}`:
 from __future__ import annotations
 
 import asyncio
-import secrets
-import time
 from typing import Any, Awaitable, Callable
 
 import httpx
 
-from .. import state  # re-exported for handlers that need shared dicts
+from .. import pricing, state  # re-exported for handlers that need shared dicts
 from ..config import BACKEND_URL
 from ..jobs import runner as jobs_runner
 
@@ -56,41 +54,54 @@ async def submit_pricing_change(args: dict[str, Any], _token: str | None) -> dic
         new_price = float(new_price)
     except (TypeError, ValueError):
         new_price = 0.0
-    ticket = "PR-" + secrets.token_hex(2).upper()
-    submitted_at = int(time.time())
+    # Persist into the shared pricing book — this is what makes the
+    # catalog and forecast see the change.
+    change = pricing.submit_change(product, new_price)
+    delta = change.get("delta_pct")
+    delta_str = (f" ({delta:+.2f}% vs previous {change['previous_price']:.2f})"
+                 if delta is not None else "")
     return {
         "content": [
             {
                 "type": "text",
                 "text": (
-                    f"Pricing change submitted for {product} at "
-                    f"{new_price:.2f}. Ticket: {ticket}."
+                    f"Pricing change submitted for {change['product']} at "
+                    f"{change['new_price']:.2f}{delta_str}. "
+                    f"Ticket: {change['ticket']}. The catalog and any "
+                    f"subsequent forecast will reflect this pending change."
                 ),
             }
         ],
-        "structuredContent": {
-            "ticket": ticket,
-            "product": product,
-            "new_price": new_price,
-            "status": "queued_for_review",
-            "submitted_at": submitted_at,
-        },
+        "structuredContent": change,
     }
 
 
 async def start_forecast(args: dict[str, Any], _token: str | None) -> dict[str, Any]:
     region = str(args.get("region", "GLOBAL")).strip().upper() or "GLOBAL"
-    job_id = jobs_runner.create_job(region)
+    # Snapshot the pending pricing changes at job-creation time so the
+    # forecast result is reproducible even if more changes land mid-run.
+    pending = pricing.all_pending()
+    job_id = jobs_runner.create_job(region, pending_pricing=pending)
     # Fire-and-forget — progress streams over SSE on /jobs/{id}/events.
     asyncio.create_task(jobs_runner.run_mock_job(job_id))
+    if pending:
+        plural = "s" if len(pending) != 1 else ""
+        pricing_note = f" Factoring in {len(pending)} pending pricing change{plural}."
+    else:
+        pricing_note = " No pending pricing changes to factor in."
     return {
         "content": [
             {
                 "type": "text",
-                "text": f"Forecast job {job_id} started for {region}.",
+                "text": f"Forecast job {job_id} started for {region}.{pricing_note}",
             }
         ],
-        "structuredContent": {"job_id": job_id, "region": region, "status": "queued"},
+        "structuredContent": {
+            "job_id": job_id,
+            "region": region,
+            "status": "queued",
+            "pending_pricing_changes": len(pending),
+        },
     }
 
 

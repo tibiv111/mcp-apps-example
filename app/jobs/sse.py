@@ -76,4 +76,4 @@ async def job_events(job_id: str, request: Request) -> EventSourceResponse:
                 correlation_id=job_id,
             )
 
-    return EventSourceResponse(stream())
+    return EventSourceResponse(stream(), headers={"X-Accel-Buffering": "no"})

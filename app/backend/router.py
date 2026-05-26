@@ -22,6 +22,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
+from .. import pricing as pricing_book
 from .. import state as app_state
 from ..config import FRONTEND_URL, PROTOCOL_VERSION
 from .data import CATALOG
@@ -136,14 +137,38 @@ def _tool_get_product(args: dict[str, Any]) -> dict[str, Any]:
             "content": [{"type": "text", "text": f"Unknown SKU: {sku}"}],
             "structuredContent": {"sku": sku, "found": False},
         }
+    # Overlay pending pricing changes from the shared book so the catalog
+    # reflects what was submitted in another view.
+    book_entry = pricing_book.get_entry(sku) or {}
+    pending = pricing_book.pending_for_sku(sku)
+    current_price = book_entry.get("current_price", entry["price"])
+    latest_pending = pending[-1] if pending else None
+
+    summary = f"{sku} · {entry['name']} · {current_price} {entry['currency']}"
+    if latest_pending:
+        summary += (
+            f" · pending {latest_pending['new_price']:.2f} "
+            f"({latest_pending['ticket']}, {latest_pending['status'].replace('_', ' ')})"
+        )
     return {
-        "content": [{"type": "text", "text": f"{sku} · {entry['name']} · {entry['price']} {entry['currency']}"}],
-        "structuredContent": {"sku": sku, "found": True, **entry},
+        "content": [{"type": "text", "text": summary}],
+        "structuredContent": {
+            "sku": sku,
+            "found": True,
+            **entry,
+            "price": current_price,
+            "current_price": current_price,
+            "pending_changes": pending,
+            "has_pending": bool(pending),
+        },
     }
 
 
 def _tool_list_products(_args: dict[str, Any]) -> dict[str, Any]:
-    items = [{"sku": sku, **entry} for sku, entry in CATALOG.items()]
+    items = []
+    for sku, entry in CATALOG.items():
+        pending = pricing_book.pending_for_sku(sku)
+        items.append({"sku": sku, **entry, "pending_changes": pending})
     return {
         "content": [{"type": "text", "text": f"{len(items)} products in catalog"}],
         "structuredContent": {"items": items},

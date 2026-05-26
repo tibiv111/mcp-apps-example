@@ -48,6 +48,16 @@
       <div><div class="k">Confidence</div><div class="v" id="fr-confidence">—</div></div>
       <div><div class="k">Job</div><div class="v" id="fr-job" style="font-size:13px">—</div></div>
     </div>
+
+    {# Visible coupling between pricing book and forecast — the drag is the
+       difference between the base uplift and the price-adjusted one. #}
+    <div id="fr-pricing-wrap" class="forecast-pricing hidden">
+      <div class="forecast-pricing-head">
+        Pricing factored
+        <span class="forecast-pricing-drag" id="fr-drag">—</span>
+      </div>
+      <div id="fr-considered" class="forecast-considered"></div>
+    </div>
     {# Two paths to chat: inline (data in user message) or silent (context
        pushed via ui/update-model-context, only trigger in chat). #}
     <div class="result-actions">

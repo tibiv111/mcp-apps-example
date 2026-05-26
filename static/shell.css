@@ -319,6 +319,69 @@ footer.app .caret::after {
   font: 10px var(--font-mono); color: var(--accent);
   background: var(--bg-soft); padding: 1px 5px; border: 1px solid var(--border-2);
 }
+
+/* ── Pending pricing changes (catalog view) ─────────────────────── */
+.pending-block {
+  margin: 14px 16px 4px; padding: 12px 14px;
+  border: 1px solid var(--border); background: var(--bg-soft);
+}
+.pending-head {
+  font: 600 10px var(--font-mono); letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--accent); margin-bottom: 8px;
+}
+.pending-list { display: flex; flex-direction: column; gap: 6px; }
+.pending-row {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(150px, 1fr) 64px 1fr;
+  gap: 10px; align-items: center;
+  font-family: var(--font-mono); font-size: 12px;
+  padding: 4px 0; border-bottom: 1px dashed var(--border-2);
+  animation: pending-in 240ms cubic-bezier(.2,.7,.2,1);
+}
+.pending-row:last-child { border-bottom: none; }
+@keyframes pending-in { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: none; } }
+.pending-ticket { color: var(--accent); }
+.pending-prices { display: inline-flex; align-items: center; gap: 8px; color: var(--text); }
+.pending-prices .prev { color: var(--text-3); text-decoration: line-through; }
+.pending-prices .arrow { color: var(--text-3); }
+.pending-prices .next { color: var(--text); font-variant-numeric: tabular-nums; }
+.pending-delta { text-align: right; font-variant-numeric: tabular-nums; }
+.pending-delta.up   { color: var(--warn); }
+.pending-delta.down { color: var(--ok); }
+.pending-status {
+  color: var(--text-2); font-size: 11px; letter-spacing: 0.04em;
+}
+
+/* ── Forecast pricing-factored panel ────────────────────────────── */
+.forecast-pricing {
+  margin-top: 18px; padding: 14px 16px;
+  border: 1px solid var(--border); background: var(--bg-soft);
+}
+.forecast-pricing-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  font: 600 10px var(--font-mono); letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--accent); margin-bottom: 10px;
+}
+.forecast-pricing-drag {
+  font: 11px var(--font-mono); letter-spacing: 0.04em;
+  padding: 2px 7px; border: 1px solid var(--border-2);
+  text-transform: none;
+}
+.forecast-pricing-drag.up   { color: var(--ok);   border-color: rgba(122,155,110,0.4); }
+.forecast-pricing-drag.down { color: var(--warn); border-color: rgba(200,156,99,0.4); }
+.forecast-considered { display: flex; flex-direction: column; gap: 5px; }
+.considered-row {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(80px, 1fr) 70px 110px;
+  gap: 10px; align-items: center;
+  font-family: var(--font-mono); font-size: 11px;
+}
+.considered-ticket { color: var(--accent); }
+.considered-sku    { color: var(--text); }
+.considered-delta  { text-align: right; font-variant-numeric: tabular-nums; }
+.considered-delta.up   { color: var(--warn); }
+.considered-delta.down { color: var(--ok); }
+.considered-drag   { color: var(--text-2); font-variant-numeric: tabular-nums; }
 .discuss-hint {
   font: 10px var(--font-mono); color: var(--text-3); letter-spacing: 0.08em;
   text-transform: uppercase;

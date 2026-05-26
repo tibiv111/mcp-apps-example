@@ -54,7 +54,9 @@ async def diagnostics_events(request: Request) -> EventSourceResponse:
         finally:
             trace.unsubscribe(queue)
 
-    return EventSourceResponse(stream())
+    # X-Accel-Buffering: no defeats Render's (and any nginx-fronted) reverse
+    # proxy buffering, which is what makes SSE feel laggy on the free tier.
+    return EventSourceResponse(stream(), headers={"X-Accel-Buffering": "no"})
 
 
 @router.post("/diagnostics/note")

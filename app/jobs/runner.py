@@ -33,7 +33,7 @@ async def emit(job_id: str, event: dict[str, Any]) -> None:
             pass
 
 
-def create_job(region: str) -> str:
+def create_job(region: str, pending_pricing: list[dict[str, Any]] | None = None) -> str:
     """Register a new job in shared state and return its id."""
     region = (region or "GLOBAL").strip().upper() or "GLOBAL"
     job_id = state.new_id("job")
@@ -45,14 +45,16 @@ def create_job(region: str) -> str:
         "step": "queued",
         "started_at": time.time(),
         "result": None,
+        # Snapshot of pricing changes the model should factor in.
+        "pending_pricing": list(pending_pricing or []),
     }
     state.job_subscribers[job_id] = []
     trace.record(
         "job.create",
         layer="jobs",
-        summary=f"created job {job_id} (region {region})",
+        summary=f"created job {job_id} (region {region}, {len(pending_pricing or [])} pending pricing change(s))",
         correlation_id=job_id,
-        detail={"region": region},
+        detail={"region": region, "pending_pricing_count": len(pending_pricing or [])},
     )
     return job_id
 
@@ -90,14 +92,51 @@ async def run_mock_job(job_id: str) -> None:
                 detail={"step": key, "progress": job["progress"]},
             )
 
-        # Synthetic but plausible result.
+        # Synthetic but plausible result. Pending pricing changes are
+        # applied as a simple elasticity drag — a +10% price hike drops
+        # uplift by ~5pp, a -5% cut adds ~2.5pp. Crude but enough that
+        # the forecast result visibly reacts to pricing submissions.
         region = job.get("region", "GLOBAL")
+        pending = job.get("pending_pricing", []) or []
+        baseline_units = 18420 + int(secrets.token_bytes(1)[0] * 12.5)
+        base_uplift = round(2.6 + (secrets.token_bytes(1)[0] / 255) * 1.4, 2)
+        confidence = round(0.78 + (secrets.token_bytes(1)[0] / 255) * 0.18, 3)
+
+        ELASTICITY = 0.5  # demand response per 1% price move
+        considered: list[dict[str, Any]] = []
+        pricing_drag_pct = 0.0
+        for change in pending:
+            delta = change.get("delta_pct")
+            if delta is None:
+                continue
+            drag = float(delta) * ELASTICITY
+            pricing_drag_pct += drag
+            considered.append(
+                {
+                    "ticket": change.get("ticket"),
+                    "product": change.get("product"),
+                    "previous_price": change.get("previous_price"),
+                    "new_price": change.get("new_price"),
+                    "delta_pct": delta,
+                    "uplift_drag_pct": round(drag, 2),
+                }
+            )
+        adjusted_uplift = round(base_uplift - pricing_drag_pct, 2)
+        # Demand drops as uplift drag rises; small, visible effect.
+        adjusted_units = int(baseline_units * (1.0 - (pricing_drag_pct / 100.0) * 0.6))
+        # Less certainty when there's a lot of pricing motion in flight.
+        adjusted_confidence = round(max(0.55, confidence - 0.01 * len(considered)), 3)
+
         result = {
             "region": region,
             "horizon_weeks": 12,
-            "baseline_units": 18420 + int(secrets.token_bytes(1)[0] * 12.5),
-            "uplift_pct": round(2.6 + (secrets.token_bytes(1)[0] / 255) * 1.4, 2),
-            "confidence": round(0.78 + (secrets.token_bytes(1)[0] / 255) * 0.18, 3),
+            "baseline_units": adjusted_units,
+            "uplift_pct": adjusted_uplift,
+            "confidence": adjusted_confidence,
+            "pricing_drag_pct": round(pricing_drag_pct, 2),
+            "considered_pricing_changes": considered,
+            "base_uplift_pct": base_uplift,
+            "base_baseline_units": baseline_units,
         }
         job["status"] = "done"
         job["progress"] = 100

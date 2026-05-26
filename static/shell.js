@@ -1,7 +1,7 @@
 (function(){
   // BASE_URL is set by the page before this script loads.
   const BASE_URL = window.NAV_AI_BASE_URL;
-  const VIEWS = ['launcher','dashboard','form','forecast'];
+  const VIEWS = ['launcher','dashboard','form','forecast','catalog'];
 
   // ── view router ──
   window.show = function(name){
@@ -319,6 +319,43 @@
       shell.classList.remove('running');
       alert('Start failed: ' + (e && e.message || e));
       btn.disabled = false; btn.textContent = 'Start forecast';
+    }
+  };
+
+  // ── Catalog (calls backend MCP via the frontend's lookup_product tool) ──
+  window.lookupProduct = async function(){
+    const btn = document.getElementById('lookup-btn');
+    const sku = document.getElementById('sku').value.trim().toUpperCase();
+    const ok  = document.getElementById('catalog-receipt');
+    const err = document.getElementById('catalog-error');
+    ok.classList.add('hidden');
+    err.classList.add('hidden');
+    btn.disabled = true; btn.textContent = 'Looking up…';
+    try {
+      const res = await sendRequest('tools/call', {
+        name: 'lookup_product',
+        arguments: { sku }
+      });
+      const data = (res && res.structuredContent) || {};
+      if (res && res.isError || data.found === false) {
+        const text = (res && res.content && res.content[0] && res.content[0].text) || 'lookup failed';
+        document.getElementById('c-error').textContent = text;
+        err.classList.remove('hidden');
+        return;
+      }
+      document.getElementById('c-sku').textContent      = data.sku || sku;
+      document.getElementById('c-name').textContent     = data.name || '—';
+      document.getElementById('c-price').textContent    = data.price != null ? Number(data.price).toFixed(2) : '—';
+      document.getElementById('c-currency').textContent = data.currency || '—';
+      document.getElementById('c-stock').textContent    = data.in_stock === true ? 'yes' : data.in_stock === false ? 'no' : '—';
+      document.getElementById('c-updated').textContent  = data.last_updated || '—';
+      document.getElementById('c-source').textContent   = data.source || 'unknown';
+      ok.classList.remove('hidden');
+    } catch (e) {
+      document.getElementById('c-error').textContent = (e && e.message) || String(e);
+      err.classList.remove('hidden');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Look up via backend';
     }
   };
 })();

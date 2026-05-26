@@ -68,12 +68,27 @@ Open <http://localhost:8000/ui/shell> for the visual preview. Tool buttons will 
 
 ## Deploy to Render
 
-1. Push this folder to a GitHub repo.
-2. In Render: **New +** → **Blueprint** → pick the repo. Render reads `render.yaml`.
-3. After the first deploy completes and Render assigns a URL, set the `BASE_URL` env var on the service to that URL, e.g. `https://nav-mock-mcp.onrender.com`. Trigger a redeploy. Without `BASE_URL`, the iframe's `<link>`/`<script>` and SSE calls all point at `localhost` and break inside Claude.
-4. Your MCP endpoint is `https://<your-app>.onrender.com/mcp`.
+`render.yaml` declares **two services** — the frontend (what Claude talks to) and the backend (called by `lookup_product`). They can also run as one process if you don't set the cross-service env vars.
 
-> Free tier sleeps after 15 min idle; first request takes ~30 sec to wake.
+1. Push this folder to a GitHub repo.
+2. In Render: **New +** → **Blueprint** → pick the repo. Render reads `render.yaml` and provisions both services.
+3. After the first deploy completes and Render assigns URLs, set the cross-service env vars (all `sync: false`, so Render asks you to fill them):
+
+   **On `nav-ai-mock-mcp` (frontend):**
+   - `BASE_URL` → this service's URL, e.g. `https://nav-ai-mock-mcp.onrender.com`. Required: without it the iframe's `<link>`/`<script>` and SSE calls all point at `localhost` and break inside Claude.
+   - `BACKEND_URL` → the backend service's URL, e.g. `https://nav-ai-mock-backend.onrender.com`. Required for split deploys: without it, `lookup_product` calls `/backend/mcp` on the frontend itself (combined-mode default) instead of the backend service.
+
+   **On `nav-ai-mock-backend`:**
+   - `FRONTEND_URL` → the frontend service's URL. Required: the backend uses `{FRONTEND_URL}/oauth/introspect` (RFC 7662) to validate bearer tokens. Without it the backend rejects every request, since it has no shared state with the frontend.
+
+4. Trigger redeploys after setting env vars.
+5. Your MCP endpoint is `https://<frontend>.onrender.com/mcp`.
+
+### Combined mode (single service)
+
+To run as one process, deploy only the frontend service (delete the backend section from `render.yaml`, or just don't set `BACKEND_URL` / `FRONTEND_URL`). The frontend's own `/backend/mcp` route serves the backend role, and bearer tokens are validated in-memory against `state.issued_tokens`. The whole demo still works — fewer moving parts, but you lose the architectural realism of two separate services.
+
+> Free tier sleeps after 15 min idle; first request takes ~30 sec to wake. With the split deploy you pay this cold start twice (frontend, then backend) on the first `lookup_product` call after idle.
 
 ## Connect from Claude
 

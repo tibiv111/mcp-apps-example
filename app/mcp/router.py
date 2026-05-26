@@ -69,6 +69,14 @@ async def mcp_session_end() -> Response:
 # Main dispatcher
 # ---------------------------------------------------------------------------
 
+def _extract_bearer(request: Request) -> str | None:
+    """Pull the bearer token from the Authorization header, if present."""
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth or not auth.lower().startswith("bearer "):
+        return None
+    return auth.split(" ", 1)[1].strip() or None
+
+
 @router.post("/mcp")
 async def mcp_endpoint(request: Request) -> Response:
     payload = await _safe_json(request)
@@ -79,6 +87,7 @@ async def mcp_endpoint(request: Request) -> Response:
     req_id = payload.get("id")
     params = payload.get("params") or {}
     is_notification = "id" not in payload  # notifications get no response body
+    bearer = _extract_bearer(request)
 
     try:
         if method == "initialize":
@@ -127,7 +136,7 @@ async def mcp_endpoint(request: Request) -> Response:
             handler = TOOL_HANDLERS.get(name)
             if not handler:
                 return JSONResponse(_error(req_id, -32602, f"Unknown tool: {name}"))
-            result = await handler(args)
+            result = await handler(args, bearer)
 
             # Echo only resourceUri onto the tool result so the host renders
             # the iframe. Other _meta.ui fields (csp, permissions) belong on

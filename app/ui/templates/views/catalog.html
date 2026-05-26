@@ -1,0 +1,46 @@
+<section id="view-catalog" class="view hidden">
+  <div class="crumbs">
+    <button onclick="show('launcher')">← workspace</button>
+    <span class="sep">/</span><span>catalog</span>
+    <span class="sep">·</span>
+    <span style="color:var(--accent);font-family:var(--font-mono);font-size:10px">BACKEND</span>
+  </div>
+  <h1 class="view-title">Product catalog</h1>
+  <p class="view-lede">
+    Calls <code style="font-family:var(--font-mono);color:var(--accent)">lookup_product</code> on this server,
+    which forwards an MCP request to a second MCP server at
+    <code style="font-family:var(--font-mono);color:var(--accent)">/backend/mcp</code>
+    using the same OAuth bearer token.
+  </p>
+
+  <form class="pricing" onsubmit="event.preventDefault(); lookupProduct();">
+    <div class="field">
+      <label for="sku">Product SKU</label>
+      <select id="sku">
+        <option>SKU-X12</option>
+        <option>SKU-A04</option>
+        <option>SKU-R21</option>
+        <option>SKU-V07</option>
+        <option>SKU-UNKNOWN</option>
+      </select>
+    </div>
+    <div class="actions">
+      <button class="primary" id="lookup-btn" type="submit">Look up via backend</button>
+      <button class="ghost" type="button" onclick="show('launcher')">Cancel</button>
+    </div>
+  </form>
+
+  <div id="catalog-receipt" class="receipt hidden">
+    <div class="row"><span class="k">SKU</span><span class="v ticket" id="c-sku">—</span></div>
+    <div class="row"><span class="k">Name</span><span class="v" id="c-name">—</span></div>
+    <div class="row"><span class="k">Price</span><span class="v" id="c-price">—</span></div>
+    <div class="row"><span class="k">Currency</span><span class="v" id="c-currency">—</span></div>
+    <div class="row"><span class="k">In stock</span><span class="v" id="c-stock">—</span></div>
+    <div class="row"><span class="k">Last updated</span><span class="v" id="c-updated">—</span></div>
+    <div class="row"><span class="k">Source</span><span class="v" id="c-source" style="font-family:var(--font-mono);font-size:11px;color:var(--text-2)">—</span></div>
+  </div>
+
+  <div id="catalog-error" class="receipt hidden" style="border-color:var(--danger)">
+    <div class="row"><span class="k">Error</span><span class="v" id="c-error" style="color:var(--danger)">—</span></div>
+  </div>
+</section>

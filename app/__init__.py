@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .backend.router import router as backend_router
 from .config import BASE_URL, SERVER_NAME, SERVER_VERSION, STATIC_DIR
 from .jobs.sse import router as jobs_router
 from .mcp.router import router as mcp_router
@@ -42,6 +43,10 @@ def create_app() -> FastAPI:
     app.include_router(oauth_router)
     app.include_router(jobs_router)
     app.include_router(ui_router)
+    # Backend MCP — conceptually a separate service, called by the frontend
+    # MCP's `lookup_product` tool. Mounted in the same process for demo
+    # simplicity.
+    app.include_router(backend_router)
 
     @app.get("/")
     async def root() -> dict[str, object]:

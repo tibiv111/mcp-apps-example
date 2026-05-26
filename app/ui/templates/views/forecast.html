@@ -1,0 +1,52 @@
+<section id="view-forecast" class="view hidden">
+  <div class="crumbs">
+    <button onclick="show('launcher')">← workspace</button>
+    <span class="sep">/</span><span>forecast</span>
+  </div>
+  <h1 class="view-title">Demand forecast</h1>
+  <p class="view-lede">12-week horizon, Monte-Carlo scenarios. Progress streams over SSE direct from this workspace.</p>
+
+  <form class="pricing" onsubmit="event.preventDefault(); startForecast();">
+    <div class="field">
+      <label for="region">Region</label>
+      <select id="region">
+        <option>GLOBAL</option>
+        <option>EU</option>
+        <option>US</option>
+        <option>APAC</option>
+        <option>LATAM</option>
+      </select>
+    </div>
+    <div class="actions">
+      <button class="primary" id="start-btn" type="submit">Start forecast</button>
+      <button class="ghost" type="button" onclick="show('launcher')">Cancel</button>
+    </div>
+  </form>
+
+  <div id="progress-shell" class="progress-shell hidden">
+    <div class="progress-head">
+      <span id="step-label">queued</span>
+      <span class="pct" id="pct">0%</span>
+    </div>
+    <div class="bar" id="bar-wrap"><i id="bar"></i></div>
+    <div class="steps" id="steps">
+      <div class="step-row" data-step="collecting"><span class="mark"></span><span>Collecting demand signals</span><span class="t">01</span></div>
+      <div class="step-row" data-step="modeling"><span class="mark"></span><span>Fitting seasonal model</span><span class="t">02</span></div>
+      <div class="step-row" data-step="simulating"><span class="mark"></span><span>Running Monte Carlo simulations</span><span class="t">03</span></div>
+      <div class="step-row" data-step="aggregating"><span class="mark"></span><span>Aggregating scenarios</span><span class="t">04</span></div>
+      <div class="step-row" data-step="finalizing"><span class="mark"></span><span>Finalizing forecast</span><span class="t">05</span></div>
+    </div>
+  </div>
+
+  <div id="forecast-result" class="result hidden">
+    <h5>Forecast complete</h5>
+    <div class="result-grid">
+      <div><div class="k">Region</div><div class="v" id="fr-region">—</div></div>
+      <div><div class="k">Horizon</div><div class="v" id="fr-horizon">—</div></div>
+      <div><div class="k">Baseline units</div><div class="v" id="fr-baseline">—</div></div>
+      <div><div class="k">Uplift</div><div class="v" id="fr-uplift">—</div></div>
+      <div><div class="k">Confidence</div><div class="v" id="fr-confidence">—</div></div>
+      <div><div class="k">Job</div><div class="v" id="fr-job" style="font-size:13px">—</div></div>
+    </div>
+  </div>
+</section>

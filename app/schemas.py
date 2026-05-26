@@ -44,6 +44,22 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "lookup_product",
+        "title": "Look up product",
+        "description": (
+            "Look up a product in the catalog. Delegates to the backend MCP "
+            "server using the caller's OAuth token."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sku": {"type": "string", "description": "Product SKU (e.g. SKU-X12)."},
+            },
+            "required": ["sku"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "start_forecast",
         "title": "Start demand forecast",
         "description": (

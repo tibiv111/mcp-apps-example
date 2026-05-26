@@ -16,6 +16,16 @@ from pathlib import Path
 
 BASE_URL: str = os.environ.get("BASE_URL", "http://localhost:8000").rstrip("/")
 
+# Where the frontend MCP finds the backend MCP. Defaults to BASE_URL so the
+# combined (single-process) deploy keeps working out of the box. Set this on
+# the frontend service when deploying split.
+BACKEND_URL: str = os.environ.get("BACKEND_URL", BASE_URL).rstrip("/")
+
+# Where the backend MCP finds the frontend's OAuth server for token
+# introspection. Unset → backend uses in-process state.issued_tokens (combined
+# mode). Set → backend validates via HTTP POST to FRONTEND_URL/oauth/introspect.
+FRONTEND_URL: str | None = (os.environ.get("FRONTEND_URL") or "").rstrip("/") or None
+
 # --- Identity ----------------------------------------------------------------
 
 SERVER_NAME: str = "nav-ai-mock"

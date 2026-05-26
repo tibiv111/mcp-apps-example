@@ -247,3 +247,15 @@ async def oauth_token(request: Request) -> dict[str, Any]:
         "refresh_token": secrets.token_urlsafe(32),
         "scope": "mcp",
     }
+
+
+@router.post("/oauth/introspect")
+async def oauth_introspect(token: str = Form("")) -> dict[str, Any]:
+    """
+    RFC 7662 token introspection (simplified — no client auth).
+
+    Lets resource servers running in a separate process (e.g. the backend
+    MCP when deployed split) validate tokens issued here without sharing
+    in-process state.
+    """
+    return {"active": bool(token) and token in app_state.issued_tokens}

@@ -1,6 +1,7 @@
 services:
+  # ─── Frontend (the MCP server Claude talks to) ────────────────────────────
   - type: web
-    name: nav-mock-mcp
+    name: nav-ai-mock-mcp
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
@@ -8,9 +9,33 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.4
-      # Set this to your assigned Render URL after first deploy, e.g.
-      #   https://nav-mock-mcp.onrender.com
+      # Set after first deploy to this service's own URL, e.g.
+      #   https://nav-ai-mock-mcp.onrender.com
       # Without it the iframe's SSE callbacks fall back to localhost and
       # break inside Claude.
       - key: BASE_URL
+        sync: false
+      # Set after the BACKEND service is deployed, to its URL, e.g.
+      #   https://nav-ai-mock-backend.onrender.com
+      # Without it the lookup_product tool calls /backend/mcp on THIS
+      # service (combined-mode default) instead of the separate backend.
+      - key: BACKEND_URL
+        sync: false
+
+  # ─── Backend (called by the frontend's lookup_product tool) ───────────────
+  - type: web
+    name: nav-ai-mock-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend_main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.4
+      # Set after the FRONTEND service is deployed, to its URL, e.g.
+      #   https://nav-ai-mock-mcp.onrender.com
+      # The backend POSTs to {FRONTEND_URL}/oauth/introspect to validate
+      # bearer tokens. Without it the backend will reject every token,
+      # since it has no shared state with the frontend.
+      - key: FRONTEND_URL
         sync: false

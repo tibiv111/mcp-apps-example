@@ -1,0 +1,36 @@
+<section id="view-form" class="view hidden">
+  <div class="crumbs">
+    <button onclick="show('launcher')">← workspace</button>
+    <span class="sep">/</span><span>pricing</span>
+  </div>
+  <h1 class="view-title">Submit pricing change</h1>
+  <p class="view-lede">Routes the request to the desk via <code style="font-family:var(--font-mono);color:var(--accent)">submit_pricing_change</code>. Confirmation appears below.</p>
+
+  <form class="pricing" onsubmit="event.preventDefault(); submitPricing();">
+    <div class="field">
+      <label for="prod">Product</label>
+      <select id="prod">
+        <option>SKU-X12 · Atlas Hedge</option>
+        <option>SKU-A04 · Cobalt Growth</option>
+        <option>SKU-R21 · Reserve Income</option>
+        <option>SKU-V07 · Vector Macro</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="price">New price (USD)</label>
+      <input id="price" type="number" min="0" step="0.01" value="129.00" />
+    </div>
+    <div class="actions">
+      <button class="primary" id="submit-btn" type="submit">Submit for review</button>
+      <button class="ghost" type="button" onclick="show('launcher')">Cancel</button>
+    </div>
+  </form>
+
+  <div id="receipt" class="receipt hidden">
+    <div class="row"><span class="k">Ticket</span><span class="v ticket" id="r-ticket">—</span></div>
+    <div class="row"><span class="k">Product</span><span class="v" id="r-product">—</span></div>
+    <div class="row"><span class="k">Price</span><span class="v" id="r-price">—</span></div>
+    <div class="row"><span class="k">Status</span><span class="v" id="r-status">—</span></div>
+    <div class="row"><span class="k">Submitted</span><span class="v" id="r-time">—</span></div>
+  </div>
+</section>

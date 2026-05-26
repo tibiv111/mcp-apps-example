@@ -521,9 +521,6 @@ _SHELL_HTML = r"""<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>NAV AI</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg:        var(--color-background-primary, #0a0d12);
@@ -541,9 +538,9 @@ _SHELL_HTML = r"""<!doctype html>
     --danger:   var(--color-text-danger, #b86a5a);
     --info:     var(--color-text-info, #6a8aa8);
 
-    --font-display: 'Instrument Serif', ui-serif, 'Iowan Old Style', Georgia, 'Times New Roman', serif;
+    --font-display: ui-serif, 'Iowan Old Style', 'Apple Garamond', 'Hoefler Text', 'Baskerville', 'Palatino Linotype', Georgia, 'Times New Roman', serif;
     --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+    --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Mono', Menlo, Consolas, 'Courier New', monospace;
 
     --pad: 18px;
     --pad-lg: 28px;

@@ -247,19 +247,13 @@ RESOURCES: list[dict[str, Any]] = [
 # -----------------------------------------------------------------------------
 
 async def _tool_launch_nav_ai(_args: dict[str, Any]) -> dict[str, Any]:
+    # Per SEP-1865, the host already knows about the UI resource via the tool's
+    # _meta.ui.resourceUri in tools/list. The tool result just needs a content
+    # array for graceful text-only fallback; the host mounts the iframe based
+    # on the tool definition's metadata, not the result.
     return {
         "content": [
             {"type": "text", "text": "NAV AI workspace opened. Use the launcher to submit a pricing change or run a forecast."},
-            # Belt-and-braces: include a resource_link too, so the host has both
-            # the inline _meta.ui.resourceUri signal AND a concrete content item
-            # referencing the UI resource. Some hosts mount on either signal.
-            {
-                "type": "resource_link",
-                "uri": SHELL_URI,
-                "name": "NAV AI shell",
-                "description": "Interactive NAV AI workspace.",
-                "mimeType": SHELL_MIME,
-            },
         ]
     }
 
@@ -482,12 +476,20 @@ async def mcp_endpoint(request: Request) -> Response:
                 "capabilities": {
                     "tools": {"listChanged": False},
                     "resources": {"listChanged": False, "subscribe": False},
+                    # Advertise MCP Apps extension support so the host activates the
+                    # UI mount path. SEP-1865 uses the extension identifier
+                    # 'io.modelcontextprotocol/ui'.
+                    "extensions": {
+                        "io.modelcontextprotocol/ui": {
+                            "mimeTypes": [SHELL_MIME],
+                        }
+                    },
                 },
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             }))
             # Streamable HTTP transport requires a session id so the client can
             # correlate subsequent requests. Without this, Claude's MCP proxy
-            # ('/v1/toolbox/shttp/...') fails the handshake with 405.
+            # ('/v1/toolbox/shttp/...') fails the handshake.
             response.headers["Mcp-Session-Id"] = uuid.uuid4().hex
             return response
 
@@ -1070,14 +1072,60 @@ _SHELL_HTML = r"""<!doctype html>
     if (hostMode === 'direct') return; // host-only notifications
     postRpc({jsonrpc:'2.0', method, params: params||{}});
   }
+  // Per SEP-1865, the host sends notifications (no id, has 'method') such as
+  // ui/notifications/tool-input, ui/notifications/tool-result, and
+  // ui/notifications/host-context-changed. Previous versions dropped these.
+  function applyHostContext(ctx) {
+    if (!ctx || typeof ctx !== 'object') return;
+    var vars = ctx.styles && ctx.styles.variables;
+    if (vars && typeof vars === 'object') {
+      Object.entries(vars).forEach(function(kv){
+        if (kv[1] != null) document.documentElement.style.setProperty(kv[0], kv[1]);
+      });
+    }
+    var fonts = ctx.styles && ctx.styles.css && ctx.styles.css.fonts;
+    if (typeof fonts === 'string' && fonts.length) {
+      var s = document.createElement('style');
+      s.textContent = fonts;
+      document.head.appendChild(s);
+    }
+  }
+
   window.addEventListener('message', (ev) => {
     const msg = ev.data;
     if (!msg || msg.jsonrpc !== '2.0') return;
-    // Ignore our own outgoing requests bouncing back when there's no parent
-    // (e.g. when the iframe is loaded directly via /ui/shell). Real responses
-    // have `result` or `error`; requests have `method`.
-    if (!('result' in msg) && !('error' in msg)) return;
     hostMode = 'host';
+
+    // Notifications & requests from host (have 'method', no 'result'/'error').
+    if (typeof msg.method === 'string') {
+      switch (msg.method) {
+        case 'ui/notifications/tool-input':
+        case 'ui/notifications/tool-input-partial':
+          // The host is delivering the original tool args. We don't need them
+          // for launch_nav_ai (no args) but acknowledging the message keeps
+          // the handshake healthy for hosts that wait for activity.
+          break;
+        case 'ui/notifications/tool-result':
+          // Final tool result. For launch_nav_ai this is informational only —
+          // the launcher view is already rendered. Ignore safely.
+          break;
+        case 'ui/notifications/host-context-changed':
+          applyHostContext(msg.params || {});
+          break;
+        case 'ui/resource-teardown':
+          // Host is tearing us down; ack with a result so it can proceed.
+          if (msg.id != null) {
+            window.parent.postMessage({jsonrpc:'2.0', id: msg.id, result: {}}, '*');
+          }
+          break;
+        default:
+          // Unknown notification — ignore silently.
+          break;
+      }
+      return;
+    }
+
+    // Responses to our outgoing requests (have 'result' or 'error').
     if (msg.id != null && pending.has(msg.id)) {
       const {resolve, reject} = pending.get(msg.id);
       pending.delete(msg.id);
@@ -1100,18 +1148,18 @@ _SHELL_HTML = r"""<!doctype html>
 
   (async () => {
     try {
+      // Per SEP-1865 the View's ui/initialize uses 'appCapabilities' and
+      // 'clientInfo', not 'capabilities' and 'appInfo'.
       const result = await sendRequest('ui/initialize', {
         protocolVersion: '2025-06-18',
-        capabilities: {},
-        appInfo: { name: 'nav-ai-shell', version: '0.1.0' },
+        appCapabilities: {
+          availableDisplayModes: ['inline'],
+        },
+        clientInfo: { name: 'nav-ai-shell', version: '0.1.0' },
       });
-      // Apply theme variables, if any.
-      const theme = result && result.theme && result.theme.cssVariables;
-      if (theme && typeof theme === 'object') {
-        Object.entries(theme).forEach(([k,v]) => {
-          document.documentElement.style.setProperty(k, v);
-        });
-      }
+      // McpUiInitializeResult.hostContext carries theme variables etc.
+      applyHostContext(result && result.hostContext);
+      // Now signal that we're ready to receive tool-input / tool-result.
       sendNotification('ui/notifications/initialized', {});
     } catch (e) {
       // No host present (browser preview) — fine, we keep our defaults.

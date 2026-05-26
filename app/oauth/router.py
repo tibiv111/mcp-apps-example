@@ -8,13 +8,12 @@ so the handshake completes, not to actually authenticate anybody.
 
 from __future__ import annotations
 
-import json
 import secrets
 import time
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import state as app_state
 from ..config import BASE_URL, DEMO_USER
@@ -61,8 +60,18 @@ async def oauth_register(request: Request) -> dict[str, Any]:
     }
 
 
+def _esc(value: str) -> str:
+    """Minimal HTML attribute escape for OAuth params re-embedded in the form."""
+    return (
+        value.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 @router.get("/oauth/authorize")
-async def oauth_authorize(
+async def oauth_authorize_form(
     response_type: str = "code",
     client_id: str = "",
     redirect_uri: str = "",
@@ -72,41 +81,156 @@ async def oauth_authorize(
     scope: str = "",
 ) -> HTMLResponse:
     """
-    Issue a fake auth code and redirect back via HTML — Claude opens this in
-    a real browser window, so we need a page that auto-redirects (not a JSON
-    response).
+    Render the mock sign-in page. Claude opens this in a real browser window,
+    so we render a form and let the user submit it — the POST handler does
+    the redirect back with an auth code.
+
+    The OAuth params are echoed back as hidden inputs so the POST handler can
+    complete the redirect without needing session state.
     """
-    auth_code = secrets.token_urlsafe(16)
-    safe_redirect = redirect_uri or "/"
-    sep = "&" if "?" in safe_redirect else "?"
-    final_url = f"{safe_redirect}{sep}code={auth_code}&state={state}"
+    fields = {
+        "response_type": response_type,
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method,
+        "scope": scope,
+    }
+    hidden = "\n".join(
+        f'        <input type="hidden" name="{k}" value="{_esc(v)}" />'
+        for k, v in fields.items()
+    )
     page = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>NAV AI · Sign in</title>
-  <meta http-equiv="refresh" content="1;url={final_url}" />
   <style>
-    body {{ background:#0a0d12; color:#e8e6e0; font:14px/1.6 ui-sans-serif,system-ui,-apple-system,sans-serif;
-            display:grid; place-items:center; height:100vh; margin:0; }}
-    .card {{ border:1px solid #1f2630; padding:32px 40px; text-align:center; max-width:380px; }}
-    h1 {{ font:italic 28px/1.1 ui-serif,Georgia,serif; margin:0 0 8px; letter-spacing:.02em; }}
-    .sub {{ color:#7a8090; font-size:13px; margin-bottom:24px; }}
-    .dot {{ display:inline-block; width:6px; height:6px; background:#d4a85a; margin-right:6px;
-            vertical-align:middle; animation:p 1.2s ease-in-out infinite; }}
-    @keyframes p {{ 0%,100%{{opacity:.3}} 50%{{opacity:1}} }}
+    :root {{
+      --bg:#0a0d12; --bg-elev:#11151c; --border:#1f2630; --border-2:#2a3340;
+      --text:#e8e6e0; --text-2:#8a8f9c; --text-3:#4d535f;
+      --accent:#d4a85a; --accent-d:#8a7547;
+      --font-display:ui-serif,'Iowan Old Style','Apple Garamond','Hoefler Text',Baskerville,'Palatino Linotype',Georgia,'Times New Roman',serif;
+      --font-sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,sans-serif;
+      --font-mono:ui-monospace,'SF Mono','JetBrains Mono','Cascadia Mono',Menlo,Consolas,'Courier New',monospace;
+    }}
+    * {{ box-sizing:border-box; }}
+    html,body {{ margin:0; padding:0; background:var(--bg); color:var(--text);
+                 font-family:var(--font-sans); font-size:13px; line-height:1.55;
+                 -webkit-font-smoothing:antialiased; min-height:100vh; }}
+    body {{
+      display:grid; place-items:center; padding:24px;
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(212,168,90,0.06), transparent 60%),
+        url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.05  0 0 0 0 0.05  0 0 0 0 0.07  0 0 0 0.5 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/></svg>");
+    }}
+    .card {{
+      width:100%; max-width:380px;
+      background:var(--bg-elev); border:1px solid var(--border);
+      padding:36px 36px 28px;
+    }}
+    .brand {{ display:flex; align-items:baseline; gap:10px; margin-bottom:28px; }}
+    .brand .mark {{
+      font-family:var(--font-display); font-style:italic; font-size:28px;
+      letter-spacing:0.01em; line-height:1;
+    }}
+    .brand .mark::after {{
+      content:"·"; color:var(--accent); margin:0 6px; font-style:normal;
+    }}
+    .brand .sub {{
+      font-family:var(--font-mono); font-size:10px; letter-spacing:0.18em;
+      color:var(--text-3); text-transform:uppercase;
+    }}
+    h1 {{
+      font-family:var(--font-display); font-style:italic; font-weight:400;
+      font-size:26px; line-height:1.1; margin:0 0 6px;
+    }}
+    .lede {{ color:var(--text-2); margin:0 0 24px; font-size:13px; }}
+    label {{
+      display:block; font-family:var(--font-mono); font-size:10px;
+      letter-spacing:0.14em; text-transform:uppercase; color:var(--text-3);
+      margin-bottom:6px;
+    }}
+    input[type=email], input[type=password] {{
+      width:100%; padding:10px 12px; background:#0d1117;
+      border:1px solid var(--border-2); color:var(--text);
+      font-family:var(--font-sans); font-size:13px;
+      outline:none; transition:border-color 120ms;
+    }}
+    input[type=email]:focus, input[type=password]:focus {{
+      border-color:var(--accent-d);
+    }}
+    .field {{ margin-bottom:16px; }}
+    button.primary {{
+      width:100%; padding:11px 14px; margin-top:8px;
+      background:var(--accent); color:#1a1308; border:none;
+      font-family:var(--font-mono); font-size:11px; letter-spacing:0.16em;
+      text-transform:uppercase; cursor:pointer;
+      transition:background 120ms;
+    }}
+    button.primary:hover {{ background:#e0b768; }}
+    .footnote {{
+      margin-top:22px; padding-top:18px; border-top:1px dashed var(--border);
+      font-family:var(--font-mono); font-size:10px; letter-spacing:0.1em;
+      color:var(--text-3); text-transform:uppercase; text-align:center;
+    }}
+    .footnote .accent {{ color:var(--accent); }}
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>NAV AI</h1>
-    <div class="sub">Authenticating as {DEMO_USER}</div>
-    <div><span class="dot"></span>completing sign-in…</div>
-  </div>
-  <script>setTimeout(function(){{ window.location = {json.dumps(final_url)}; }}, 1000);</script>
+  <form class="card" method="POST" action="/oauth/authorize">
+    <div class="brand">
+      <span class="mark">NAV<i style="font-style:normal">AI</i></span>
+      <span class="sub">SIGN IN</span>
+    </div>
+    <h1>Welcome back.</h1>
+    <p class="lede">Sign in to continue to NAV AI.</p>
+
+    <div class="field">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" value="{_esc(DEMO_USER)}" autocomplete="username" />
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" value="demo" autocomplete="current-password" />
+    </div>
+
+{hidden}
+
+    <button type="submit" class="primary">Sign in →</button>
+
+    <div class="footnote">
+      <span class="accent">●</span> Mock auth · accepts any credentials
+    </div>
+  </form>
 </body>
 </html>"""
     return HTMLResponse(page)
+
+
+@router.post("/oauth/authorize")
+async def oauth_authorize_submit(
+    email: str = Form(""),
+    password: str = Form(""),
+    response_type: str = Form("code"),
+    client_id: str = Form(""),
+    redirect_uri: str = Form(""),
+    state: str = Form(""),
+    code_challenge: str = Form(""),
+    code_challenge_method: str = Form(""),
+    scope: str = Form(""),
+) -> RedirectResponse:
+    """
+    Accept any submitted credentials and complete the OAuth redirect with a
+    fresh auth code. Email/password are intentionally unused — this is a mock.
+    """
+    _ = (email, password, response_type, client_id, code_challenge, code_challenge_method, scope)
+    auth_code = secrets.token_urlsafe(16)
+    safe_redirect = redirect_uri or "/"
+    sep = "&" if "?" in safe_redirect else "?"
+    final_url = f"{safe_redirect}{sep}code={auth_code}&state={state}"
+    return RedirectResponse(url=final_url, status_code=302)
 
 
 @router.post("/oauth/token")

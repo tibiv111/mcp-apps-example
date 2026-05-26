@@ -4,7 +4,13 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.4
+      # Set this to your assigned Render URL after first deploy, e.g.
+      #   https://nav-mock-mcp.onrender.com
+      # Without it the iframe's SSE callbacks fall back to localhost and
+      # break inside Claude.
+      - key: BASE_URL
+        sync: false

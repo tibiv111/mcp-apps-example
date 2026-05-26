@@ -1,0 +1,324 @@
+(function(){
+  // BASE_URL is set by the page before this script loads.
+  const BASE_URL = window.NAV_AI_BASE_URL;
+  const VIEWS = ['launcher','dashboard','form','forecast'];
+
+  // ── view router ──
+  window.show = function(name){
+    VIEWS.forEach(v => {
+      const el = document.getElementById('view-'+v);
+      if (!el) return;
+      if (v === name) { el.classList.remove('hidden'); el.style.animation='none'; void el.offsetWidth; el.style.animation=''; }
+      else el.classList.add('hidden');
+    });
+  };
+
+  // ── JSON-RPC postMessage client (with direct-HTTP fallback for /ui/shell preview) ──
+  let nextId = 1;
+  const pending = new Map();
+  // If no parent responds within HOST_PROBE_MS, we assume we're in the preview
+  // (a regular browser tab, no MCP host listening) and fall back to direct HTTP.
+  const HOST_PROBE_MS = 800;
+  let hostMode = 'unknown'; // 'host' | 'direct' | 'unknown'
+
+  function postRpc(payload){
+    try { window.parent.postMessage(payload, '*'); } catch(e) {}
+  }
+
+  async function directCall(method, params){
+    const r = await fetch(BASE_URL + '/mcp', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'Accept':'application/json'},
+      body: JSON.stringify({jsonrpc:'2.0', id: nextId++, method, params: params||{}})
+    });
+    const json = await r.json();
+    if (json.error) throw new Error(json.error.message || 'rpc error');
+    return json.result;
+  }
+
+  function sendRequest(method, params){
+    if (hostMode === 'direct') return directCall(method, params);
+    return new Promise((resolve, reject) => {
+      const id = nextId++;
+      let settled = false;
+      pending.set(id, {
+        resolve: (v) => { settled = true; resolve(v); },
+        reject:  (e) => { settled = true; reject(e); }
+      });
+      postRpc({jsonrpc:'2.0', id, method, params: params||{}});
+      // Fallback to direct HTTP only for tools/* and resources/* — never for
+      // ui/* methods, which are host-only and meaningless to our /mcp endpoint.
+      // Also: only fall back if no message at all has arrived from the parent.
+      if (hostMode === 'unknown' && !method.startsWith('ui/')) {
+        setTimeout(() => {
+          if (!settled && pending.has(id) && hostMode === 'unknown') {
+            pending.delete(id);
+            hostMode = 'direct';
+            console.debug('[NAV AI] no MCP host detected, falling back to direct HTTP /mcp');
+            directCall(method, params).then(resolve, reject);
+          }
+        }, HOST_PROBE_MS);
+      }
+    });
+  }
+  function sendNotification(method, params){
+    if (hostMode === 'direct') return; // host-only notifications
+    postRpc({jsonrpc:'2.0', method, params: params||{}});
+  }
+  // Per SEP-1865, the host sends notifications (no id, has 'method') such as
+  // ui/notifications/tool-input, ui/notifications/tool-result, and
+  // ui/notifications/host-context-changed. Previous versions dropped these.
+  function applyHostContext(ctx) {
+    if (!ctx || typeof ctx !== 'object') return;
+    var vars = ctx.styles && ctx.styles.variables;
+    if (vars && typeof vars === 'object') {
+      Object.entries(vars).forEach(function(kv){
+        if (kv[1] != null) document.documentElement.style.setProperty(kv[0], kv[1]);
+      });
+    }
+    var fonts = ctx.styles && ctx.styles.css && ctx.styles.css.fonts;
+    if (typeof fonts === 'string' && fonts.length) {
+      var s = document.createElement('style');
+      s.textContent = fonts;
+      document.head.appendChild(s);
+    }
+  }
+
+  window.addEventListener('message', (ev) => {
+    const msg = ev.data;
+    // ANY message from the parent — including Claude's non-JSON-RPC auth/session
+    // probes — proves there's a host. Flip out of unknown mode immediately so
+    // we don't fall back to direct HTTP and break the handshake. See
+    // https://github.com/anthropics/claude-ai-mcp/issues/47 for context.
+    if (msg && typeof msg === 'object') {
+      if (hostMode !== 'direct') hostMode = 'host';
+    }
+    if (!msg || msg.jsonrpc !== '2.0') {
+      // Log non-protocol traffic for debugging; do not respond.
+      try { console.debug('[NAV AI] non-JSON-RPC msg from parent:', msg); } catch(e){}
+      return;
+    }
+
+    // Notifications & requests from host (have 'method', no 'result'/'error').
+    if (typeof msg.method === 'string') {
+      try { console.debug('[NAV AI] host →', msg.method, msg.params); } catch(e){}
+      switch (msg.method) {
+        case 'ui/notifications/tool-input':
+        case 'ui/notifications/tool-input-partial':
+          // The host is delivering the original tool args. We don't need them
+          // for launch_nav_ai (no args) but acknowledging the message keeps
+          // the handshake healthy for hosts that wait for activity.
+          break;
+        case 'ui/notifications/tool-result':
+          // Final tool result. For launch_nav_ai this is informational only —
+          // the launcher view is already rendered. Ignore safely.
+          break;
+        case 'ui/notifications/host-context-changed':
+          applyHostContext(msg.params || {});
+          break;
+        case 'ui/resource-teardown':
+          // Host is tearing us down; ack with a result so it can proceed.
+          if (msg.id != null) {
+            window.parent.postMessage({jsonrpc:'2.0', id: msg.id, result: {}}, '*');
+          }
+          break;
+        case 'ping':
+          // Respond to ping requests if they carry an id.
+          if (msg.id != null) {
+            window.parent.postMessage({jsonrpc:'2.0', id: msg.id, result: {}}, '*');
+          }
+          break;
+        default:
+          // Unknown notification — ignore silently.
+          break;
+      }
+      return;
+    }
+
+    // Responses to our outgoing requests (have 'result' or 'error').
+    try { console.debug('[NAV AI] host ← response id=' + msg.id, msg.result || msg.error); } catch(e){}
+    if (msg.id != null && pending.has(msg.id)) {
+      const {resolve, reject} = pending.get(msg.id);
+      pending.delete(msg.id);
+      if (msg.error) reject(msg.error); else resolve(msg.result);
+    }
+  });
+
+  // ── ui/initialize handshake + size reporting ──
+  function reportSize() {
+    const h = Math.max(
+      document.documentElement.scrollHeight,
+      document.body ? document.body.scrollHeight : 0,
+      300
+    );
+    sendNotification('ui/notifications/size-changed', {
+      height: h,
+      width: document.documentElement.clientWidth || window.innerWidth,
+    });
+  }
+
+  (async () => {
+    let initFired = false;
+    function fireInitialized() {
+      if (initFired) return;
+      initFired = true;
+      try { console.debug('[NAV AI] → ui/notifications/initialized'); } catch(e){}
+      sendNotification('ui/notifications/initialized', {});
+    }
+    try {
+      // Race the host's ui/initialize response against a 3s timeout. Some hosts
+      // route the response through a sandbox proxy and the round-trip is slow
+      // on cold starts; rather than block forever (and never let the host flip
+      // visibility), we fire 'initialized' regardless and apply hostContext
+      // when/if the response arrives later.
+      const initPromise = sendRequest('ui/initialize', {
+        protocolVersion: '2025-06-18',
+        appCapabilities: {
+          availableDisplayModes: ['inline'],
+        },
+        clientInfo: { name: 'nav-ai-shell', version: '0.1.0' },
+      });
+      const timeoutPromise = new Promise(function(_, rej){
+        setTimeout(function(){ rej(new Error('ui/initialize response timeout')); }, 3000);
+      });
+      try {
+        const result = await Promise.race([initPromise, timeoutPromise]);
+        applyHostContext(result && result.hostContext);
+      } catch (raceErr) {
+        try { console.debug('[NAV AI] ui/initialize did not resolve in time:', raceErr.message); } catch(e){}
+        // Still apply context if the real promise resolves later.
+        initPromise.then(function(r){ applyHostContext(r && r.hostContext); }).catch(function(){});
+      }
+      fireInitialized();
+    } catch (e) {
+      try { console.debug('[NAV AI] ui/initialize threw:', e); } catch(_){}
+      // Even on error, if we're in host mode (parent posted something), fire
+      // initialized so the host can flip visibility on its end.
+      if (hostMode === 'host') fireInitialized();
+    }
+    // Report initial size, then keep reporting on any DOM growth/shrink.
+    reportSize();
+    try {
+      const ro = new ResizeObserver(() => reportSize());
+      if (document.body) ro.observe(document.body);
+    } catch(e) { /* older browser fallback below */ }
+    window.addEventListener('resize', reportSize);
+    // Re-measure after layout settles, animations finish, etc.
+    setTimeout(reportSize, 100);
+    setTimeout(reportSize, 500);
+    setTimeout(reportSize, 1500);
+  })();
+
+  // Re-measure after every view switch.
+  const _show = window.show;
+  window.show = function(name){
+    _show(name);
+    setTimeout(reportSize, 50);
+    setTimeout(reportSize, 350);
+  };
+
+  // ── Pricing form ──
+  window.submitPricing = async function(){
+    const btn = document.getElementById('submit-btn');
+    const prodLabel = document.getElementById('prod').value;
+    const product = prodLabel.split(' · ')[0];
+    const new_price = parseFloat(document.getElementById('price').value);
+    btn.disabled = true; btn.textContent = 'Submitting…';
+    try {
+      const res = await sendRequest('tools/call', {
+        name: 'submit_pricing_change',
+        arguments: { product, new_price }
+      });
+      const data = (res && res.structuredContent) || {};
+      const box = document.getElementById('receipt');
+      document.getElementById('r-ticket').textContent  = data.ticket || '—';
+      document.getElementById('r-product').textContent = data.product || product;
+      document.getElementById('r-price').textContent   = '$' + Number(data.new_price || new_price).toFixed(2);
+      document.getElementById('r-status').textContent  = (data.status || 'submitted').replace(/_/g,' ');
+      document.getElementById('r-time').textContent    = new Date((data.submitted_at||Date.now()/1000)*1000).toISOString().slice(11,19) + ' UTC';
+      box.classList.remove('hidden');
+    } catch (e) {
+      alert('Submit failed: ' + (e && e.message || e));
+    } finally {
+      btn.disabled = false; btn.textContent = 'Submit for review';
+    }
+  };
+
+  // ── Forecast + SSE ──
+  let currentSource = null;
+  function setProgress(pct, label){
+    document.getElementById('bar').style.width = (pct||0) + '%';
+    document.getElementById('pct').textContent = (pct||0) + '%';
+    if (label) document.getElementById('step-label').textContent = label;
+  }
+  function markStep(active){
+    const rows = document.querySelectorAll('.step-row');
+    let passed = true;
+    rows.forEach(r => {
+      r.classList.remove('active','done');
+      if (r.dataset.step === active) { r.classList.add('active'); passed = false; }
+      else if (passed) { r.classList.add('done'); }
+    });
+  }
+  window.startForecast = async function(){
+    if (currentSource) { try { currentSource.close(); } catch(e){} currentSource = null; }
+    const btn = document.getElementById('start-btn');
+    const region = document.getElementById('region').value;
+    btn.disabled = true; btn.textContent = 'Starting…';
+    document.getElementById('forecast-result').classList.add('hidden');
+    const shell = document.getElementById('progress-shell');
+    shell.classList.remove('hidden');
+    shell.classList.add('running');
+    setProgress(0, 'queued');
+    document.querySelectorAll('.step-row').forEach(r => r.classList.remove('active','done'));
+
+    try {
+      const res = await sendRequest('tools/call', {
+        name: 'start_forecast',
+        arguments: { region }
+      });
+      const job_id = res && res.structuredContent && res.structuredContent.job_id;
+      if (!job_id) throw new Error('no job_id returned');
+      document.getElementById('fr-job').textContent = job_id;
+
+      const url = BASE_URL + '/jobs/' + encodeURIComponent(job_id) + '/events';
+      const src = new EventSource(url);
+      currentSource = src;
+      const handle = (ev, type) => {
+        let payload = {};
+        try { payload = JSON.parse(ev.data); } catch(e){}
+        if (type === 'progress' || type === 'snapshot') {
+          setProgress(payload.progress, payload.step_label || payload.step);
+          if (payload.step) markStep(payload.step);
+        } else if (type === 'done') {
+          setProgress(100, 'complete');
+          markStep('finalizing');
+          document.querySelectorAll('.step-row').forEach(r => { r.classList.remove('active'); r.classList.add('done'); });
+          shell.classList.remove('running');
+          const r = payload.result || {};
+          document.getElementById('fr-region').textContent     = r.region || region;
+          document.getElementById('fr-horizon').textContent    = (r.horizon_weeks || 12) + ' wk';
+          document.getElementById('fr-baseline').textContent   = (r.baseline_units || 0).toLocaleString() + ' u';
+          document.getElementById('fr-uplift').textContent     = (r.uplift_pct != null ? '+'+r.uplift_pct+'%' : '—');
+          document.getElementById('fr-confidence').textContent = r.confidence != null ? (r.confidence*100).toFixed(1)+'%' : '—';
+          document.getElementById('forecast-result').classList.remove('hidden');
+          src.close(); currentSource = null;
+          btn.disabled = false; btn.textContent = 'Start forecast';
+        } else if (type === 'error') {
+          shell.classList.remove('running');
+          alert('Forecast failed: ' + (payload.error || 'unknown'));
+          src.close(); currentSource = null;
+          btn.disabled = false; btn.textContent = 'Start forecast';
+        }
+      };
+      src.addEventListener('snapshot', e => handle(e, 'snapshot'));
+      src.addEventListener('progress', e => handle(e, 'progress'));
+      src.addEventListener('done',     e => handle(e, 'done'));
+      src.addEventListener('error',    e => { /* network blip; EventSource auto-retries */ });
+    } catch (e) {
+      shell.classList.remove('running');
+      alert('Start failed: ' + (e && e.message || e));
+      btn.disabled = false; btn.textContent = 'Start forecast';
+    }
+  };
+})();

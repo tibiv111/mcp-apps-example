@@ -1,6 +1,6 @@
 # NAV AI — Mock MCP Apps server
 
-A single-file FastAPI app that implements an [MCP Apps](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/) (SEP-1865) server with an interactive iframe UI, live SSE progress, and a mocked OAuth flow — everything needed to test the MCP Apps surface in Claude end-to-end without standing up real auth or persistence.
+A FastAPI app that implements an [MCP Apps](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/) (SEP-1865) server with an interactive iframe UI, live SSE progress, and a mocked OAuth flow — everything needed to test the MCP Apps surface in Claude end-to-end without standing up real auth or persistence.
 
 ## What you get
 
@@ -18,21 +18,60 @@ Three tools:
 | `submit_pricing_change` | – | Called from the iframe's form view |
 | `start_forecast` | – | Called from the iframe; spawns a background job |
 
+## Project structure
+
+```
+nav-mock-mcp/
+├── app/
+│   ├── __init__.py        # create_app() — wires routers, CORS, /static mount
+│   ├── config.py          # BASE_URL, SHELL_URI, paths, constants
+│   ├── state.py           # In-memory jobs/subscribers/tokens
+│   ├── schemas.py         # TOOLS and RESOURCES (declarative MCP metadata)
+│   │
+│   ├── mcp/
+│   │   ├── router.py      # POST/GET/DELETE /mcp dispatcher
+│   │   └── tools.py       # Tool handlers + TOOL_HANDLERS map
+│   │
+│   ├── oauth/
+│   │   └── router.py      # Discovery + DCR + authorize + token
+│   │
+│   ├── jobs/
+│   │   ├── runner.py      # Background forecast pipeline + event emit
+│   │   └── sse.py         # GET /jobs/{id}/events
+│   │
+│   └── ui/
+│       ├── router.py      # GET /ui/shell preview
+│       ├── render.py      # Jinja2 shell HTML renderer
+│       └── templates/
+│           └── shell.html
+│
+├── static/
+│   ├── shell.css          # All shell styles
+│   └── shell.js           # postMessage RPC + SSE client + view router
+│
+├── main.py                # `app = create_app()` — entrypoint
+├── requirements.txt
+├── render.yaml
+└── README.md
+```
+
+**Adding a new tool**: append a definition to `app/schemas.py:TOOLS`, write a handler in `app/mcp/tools.py`, register it in `TOOL_HANDLERS`. The dispatcher needs no changes.
+
 ## Run locally
 
 ```bash
 pip install -r requirements.txt
-uvicorn server:app --reload --port 8000
+uvicorn main:app --reload --port 8000
 ```
 
-Open http://localhost:8000/ui/shell for the visual preview. Tool buttons will no-op (no MCP host parent listening) but navigation works.
+Open <http://localhost:8000/ui/shell> for the visual preview. Tool buttons will no-op (no MCP host parent listening) but navigation works.
 
 ## Deploy to Render
 
 1. Push this folder to a GitHub repo.
 2. In Render: **New +** → **Blueprint** → pick the repo. Render reads `render.yaml`.
-3. (Optional) Set the `BASE_URL` env var on the service to your Render URL once it's assigned, e.g. `https://nav-mock-mcp.onrender.com`. Without this, the iframe's SSE calls will use `localhost` and break in Claude.
-4. Wait for deploy. Your MCP endpoint is `https://<your-app>.onrender.com/mcp`.
+3. After the first deploy completes and Render assigns a URL, set the `BASE_URL` env var on the service to that URL, e.g. `https://nav-mock-mcp.onrender.com`. Trigger a redeploy. Without `BASE_URL`, the iframe's `<link>`/`<script>` and SSE calls all point at `localhost` and break inside Claude.
+4. Your MCP endpoint is `https://<your-app>.onrender.com/mcp`.
 
 > Free tier sleeps after 15 min idle; first request takes ~30 sec to wake.
 
@@ -56,19 +95,20 @@ The launcher iframe should render inline. From there:
 ## Architecture sketch
 
 ```
-┌─────────────────────────────────────────────────┐
-│  FastAPI app (one process)                      │
-│                                                 │
-│  ┌────────────┐ ┌────────────┐ ┌─────────────┐  │
-│  │ MCP        │ │ OAuth      │ │ Direct      │  │
-│  │ /mcp       │ │ /oauth/*   │ │ /jobs/*     │  │
-│  └─────┬──────┘ └────────────┘ └──────┬──────┘  │
-│        │                              │         │
-│        ▼                              ▼         │
-│   In-memory: jobs dict, SSE subscriber queues   │
-│                                                 │
-│   Shell HTML (inlined CSS + JS, one function)   │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  FastAPI app (one process)                               │
+│                                                          │
+│  ┌────────────┐ ┌────────────┐ ┌─────────┐ ┌──────────┐  │
+│  │ MCP        │ │ OAuth      │ │ Jobs    │ │ UI       │  │
+│  │ /mcp       │ │ /oauth/*   │ │ /jobs/* │ │ /ui/...  │  │
+│  └─────┬──────┘ └────────────┘ └────┬────┘ └────┬─────┘  │
+│        │                            │           │        │
+│        ▼                            ▼           ▼        │
+│   shared state (app/state.py): jobs, subscribers         │
+│                                                          │
+│   /static/* → shell.css, shell.js                        │
+│   templates/shell.html → rendered with base_url          │
+└──────────────────────────────────────────────────────────┘
         ▲                              ▲
         │ JSON-RPC (Claude)            │ SSE (iframe → server)
         │                              │
@@ -91,13 +131,4 @@ Two communication channels deliberately:
 4. Only `launch_nav_ai` has `_meta.ui.resourceUri`. The other tools are normal.
 5. `connectDomains` includes the server's own `BASE_URL` so the iframe can open SSE back to it.
 6. `/oauth/authorize` returns HTML with a redirect, not JSON.
-
-## File layout
-
-```
-nav-mock-mcp/
-├── server.py          # FastAPI app, MCP handlers, OAuth, shell HTML
-├── requirements.txt   # fastapi, uvicorn, sse-starlette
-├── render.yaml        # Render Blueprint
-└── README.md          # this file
-```
+7. Shell HTML references `/static/*` via absolute `BASE_URL` so assets resolve inside the host's iframe sandbox.

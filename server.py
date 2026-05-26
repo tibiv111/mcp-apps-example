@@ -22,6 +22,7 @@ from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
 
@@ -59,6 +60,18 @@ def _new_id(prefix: str) -> str:
 # -----------------------------------------------------------------------------
 
 app = FastAPI(title="NAV AI Mock MCP", version=SERVER_VERSION)
+
+# Permissive CORS so the iframe (hosted on *.claudemcpcontent.com) can talk to
+# our /jobs/{id}/events SSE endpoint and any other direct routes. This is a mock;
+# tighten this in production.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 
 @app.get("/")
@@ -420,6 +433,28 @@ async def _safe_json(request: Request) -> Any:
         return await request.json()
     except Exception:
         return None
+
+
+@app.get("/mcp")
+async def mcp_listener(request: Request) -> EventSourceResponse:
+    """
+    Streamable HTTP transport: client opens GET /mcp to listen for server-initiated
+    notifications. We don't push anything, so just hold the connection open with
+    periodic heartbeats. Without this the client's transport bails with 405.
+    """
+    async def stream() -> AsyncIterator[dict[str, Any]]:
+        while True:
+            if await request.is_disconnected():
+                break
+            yield {"event": "ping", "data": "{}"}
+            await asyncio.sleep(15)
+    return EventSourceResponse(stream())
+
+
+@app.delete("/mcp")
+async def mcp_session_end() -> Response:
+    """Streamable HTTP transport: session termination."""
+    return Response(status_code=204)
 
 
 @app.post("/mcp")
@@ -1027,6 +1062,10 @@ _SHELL_HTML = r"""<!doctype html>
   window.addEventListener('message', (ev) => {
     const msg = ev.data;
     if (!msg || msg.jsonrpc !== '2.0') return;
+    // Ignore our own outgoing requests bouncing back when there's no parent
+    // (e.g. when the iframe is loaded directly via /ui/shell). Real responses
+    // have `result` or `error`; requests have `method`.
+    if (!('result' in msg) && !('error' in msg)) return;
     hostMode = 'host';
     if (msg.id != null && pending.has(msg.id)) {
       const {resolve, reject} = pending.get(msg.id);

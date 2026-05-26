@@ -389,44 +389,130 @@
     }
   };
 
-  // ── Bidirectional: ask the host model to comment on a selection ──
-  // The discuss_selection tool returns text addressed *to* the model. Claude
-  // sees the tool result and answers in the chat thread without the user
-  // having typed anything. We trace both sides so /diagnostics shows the
-  // iframe-initiated path clearly.
-  async function callDiscuss(kind, context, buttonId){
+  // ── Send selection to chat via host sendMessage ──
+  // Real bidirectional path (per MCP Apps SDK): updateModelContext stashes
+  // the full selection in the model's context without crowding the chat,
+  // then sendMessage injects a short user-role trigger that makes Claude
+  // respond inline. If the host doesn't implement these methods (older
+  // host or different wire-name) we fall back to revealing a paste hint.
+  //
+  // The SDK names are `app.sendMessage` / `app.updateModelContext`. The
+  // JSON-RPC method name on the wire isn't formally pinned in the public
+  // docs we have, so we try a couple of likely variants.
+  const HOST_METHOD_CANDIDATES = {
+    sendMessage:        ['sendMessage', 'ui/sendMessage'],
+    updateModelContext: ['updateModelContext', 'ui/updateModelContext'],
+  };
+  // Cache the first method name that worked so subsequent calls go direct.
+  const _hostMethodResolved = { sendMessage: null, updateModelContext: null };
+
+  function _isMethodNotFound(err){
+    if (!err) return false;
+    if (err.code === -32601) return true;
+    const msg = (err.message || String(err)).toLowerCase();
+    return msg.indexOf('method not found') !== -1 || msg.indexOf('unknown method') !== -1;
+  }
+
+  async function callHost(logicalName, params){
+    const cached = _hostMethodResolved[logicalName];
+    if (cached) return sendRequest(cached, params);
+    const candidates = HOST_METHOD_CANDIDATES[logicalName] || [logicalName];
+    let lastErr = null;
+    for (const m of candidates){
+      try {
+        const result = await sendRequest(m, params);
+        _hostMethodResolved[logicalName] = m;
+        return result;
+      } catch (e) {
+        lastErr = e;
+        if (!_isMethodNotFound(e)) throw e;
+      }
+    }
+    const err = new Error('host does not implement ' + logicalName);
+    err.cause = lastErr;
+    err.notImplemented = true;
+    throw err;
+  }
+
+  function _selectionContextBlock(kind, context){
+    return {
+      type: 'text',
+      text: '[NAV AI workspace — user selected a ' + kind + ' in the iframe]\n' +
+            'Full selection payload (the user did not type this; it was pushed via updateModelContext):\n' +
+            JSON.stringify(context, null, 2),
+    };
+  }
+
+  async function callDiscuss(kind, context, buttonId, hintId, triggerText){
     const btn = document.getElementById(buttonId);
+    const hint = hintId ? document.getElementById(hintId) : null;
     const original = btn ? btn.textContent : null;
-    if (btn) { btn.disabled = true; btn.textContent = 'Sending to assistant…'; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Asking Claude…'; }
     const corr = 'discuss-' + Date.now().toString(36);
-    diagNote('ui.discuss', 'iframe → host: discuss ' + kind, { kind, context }, corr);
-    try {
-      await sendRequest('tools/call', {
-        name: 'discuss_selection',
-        arguments: { kind, context }
-      });
-      diagNote('ui.discuss.sent', 'tool result delivered — host should respond in chat', { kind }, corr);
+    diagNote('ui.discuss', 'iframe → host: sendMessage for ' + kind, { kind, trigger: triggerText }, corr);
+
+    function fallbackToHint(reason){
+      diagNote('ui.discuss.fallback', reason, { kind }, corr);
+      if (hint) {
+        hint.classList.remove('hidden');
+        setTimeout(() => { try { reportSize(); } catch(_){} }, 50);
+      }
       if (btn) {
-        btn.textContent = '✓ sent to chat';
-        setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 1800);
+        btn.textContent = '✓ context staged · paste the hint';
+        setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 2400);
+      }
+    }
+
+    // 1) Offload the heavy selection to the model context (silent in chat).
+    let contextOk = true;
+    try {
+      await callHost('updateModelContext', {
+        content: [_selectionContextBlock(kind, context)],
+      });
+      diagNote('ui.updateModelContext.ok', 'selection pushed into model context', { kind }, corr);
+    } catch (e) {
+      contextOk = false;
+      diagNote('ui.updateModelContext.fail', String(e && e.message || e), { kind, notImplemented: !!e.notImplemented }, corr);
+    }
+
+    // 2) Trigger Claude with the short user-role prompt.
+    try {
+      const result = await callHost('sendMessage', {
+        role: 'user',
+        content: [
+          { type: 'text', text: triggerText },
+          // If updateModelContext wasn't available, ship the data inline as a
+          // fallback so the model still has it — noisier in chat but works.
+          ...(contextOk ? [] : [_selectionContextBlock(kind, context)]),
+        ],
+      });
+      if (result && result.isError) {
+        diagNote('ui.sendMessage.rejected', 'host rejected sendMessage (isError)', { kind }, corr);
+        fallbackToHint('host returned isError on sendMessage');
+        return;
+      }
+      diagNote('ui.sendMessage.ok', 'host accepted sendMessage — Claude is responding', { kind }, corr);
+      if (btn) {
+        btn.textContent = '✓ Claude is replying in chat';
+        setTimeout(() => { btn.disabled = false; if (original) btn.textContent = original; }, 2800);
       }
     } catch (e) {
-      diagNote('ui.discuss.error', String(e && e.message || e), { kind }, corr);
-      if (btn) { btn.disabled = false; btn.textContent = original || 'Discuss with Claude'; }
-      alert('Could not reach the assistant: ' + (e && e.message || e));
+      diagNote('ui.sendMessage.fail', String(e && e.message || e), { kind, notImplemented: !!e.notImplemented }, corr);
+      fallbackToHint('host does not implement sendMessage');
     }
   }
+
   window.discussForecast = function(){
     if (!lastSelection.forecast) { alert('Run a forecast first.'); return; }
-    callDiscuss('forecast', lastSelection.forecast, 'discuss-forecast');
+    callDiscuss('forecast', lastSelection.forecast, 'discuss-forecast', 'hint-forecast', 'analyze this forecast');
   };
   window.discussPricing = function(){
     if (!lastSelection.pricing) { alert('Submit a pricing change first.'); return; }
-    callDiscuss('pricing', lastSelection.pricing, 'discuss-pricing');
+    callDiscuss('pricing', lastSelection.pricing, 'discuss-pricing', 'hint-pricing', 'review this pricing change');
   };
   window.discussCatalog = function(){
     if (!lastSelection.catalog) { alert('Look up a product first.'); return; }
-    callDiscuss('catalog', lastSelection.catalog, 'discuss-catalog');
+    callDiscuss('catalog', lastSelection.catalog, 'discuss-catalog', 'hint-catalog', 'summarize this product');
   };
 
   // ── Server-pushed shell updates (banner + revision) ──

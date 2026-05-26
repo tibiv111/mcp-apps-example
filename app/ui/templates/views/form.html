@@ -34,8 +34,13 @@
     <div class="row"><span class="k">Submitted</span><span class="v" id="r-time">—</span></div>
     <div class="result-actions" style="padding:14px 16px 16px">
       <button class="discuss" id="discuss-pricing" onclick="discussPricing()">
-        <span class="ico">↗</span> Discuss with Claude
+        <span class="ico">↗</span> Send to chat
       </button>
+      <span class="discuss-hint">Stages this ticket as a tool artifact so Claude has full context.</span>
+      <div class="chat-hint hidden" id="hint-pricing">
+        <span class="chat-hint-tag">↩ now in chat</span>
+        <code>review this pricing change</code>
+      </div>
     </div>
   </div>
 </section>

@@ -168,78 +168,6 @@ async def lookup_product(args: dict[str, Any], token: str | None) -> dict[str, A
     }
 
 
-async def discuss_selection(args: dict[str, Any], _token: str | None) -> dict[str, Any]:
-    """
-    Bidirectional path: iframe asks the host model to comment on something
-    the user just selected. The tool call goes through Claude (the user never
-    typed in chat), and the tool result is text that's plainly addressed *to*
-    the model, asking it to respond — so Claude turns around and answers in
-    the chat thread unprompted from the user's typing perspective.
-
-    The 'content' string deliberately reads as a directive. The model sees
-    it as part of the tool result and responds naturally.
-    """
-    kind = str(args.get("kind", "selection")).strip().lower() or "selection"
-    context = args.get("context") or {}
-    if not isinstance(context, dict):
-        context = {"value": context}
-    question = (args.get("question") or "").strip()
-
-    if kind == "forecast":
-        default_q = (
-            "Briefly interpret this forecast for the user: explain what the "
-            "uplift and confidence numbers imply, and one risk to watch."
-        )
-        headline = f"Forecast result for {context.get('region', '—')}"
-    elif kind == "pricing":
-        default_q = (
-            "Comment on this pricing change: is the magnitude reasonable, "
-            "and what should the user expect from the review queue?"
-        )
-        headline = f"Pricing submission {context.get('ticket', '')}"
-    elif kind == "catalog":
-        default_q = (
-            "Summarize this product for the user in one sentence and flag "
-            "anything unusual about the price or stock state."
-        )
-        headline = f"Catalog entry {context.get('sku', '')}"
-    elif kind == "dashboard_row":
-        default_q = (
-            "Briefly explain what this dashboard line item means, in plain "
-            "English. One paragraph max."
-        )
-        headline = f"Dashboard item: {context.get('label', '')}"
-    else:
-        default_q = "Briefly comment on the selection below for the user."
-        headline = f"Workspace selection ({kind})"
-
-    prompt = question or default_q
-    context_blob = "\n".join(f"  {k}: {v}" for k, v in context.items())
-
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": (
-                    f"[Iframe-initiated discussion · {headline}]\n\n"
-                    f"The user clicked 'Discuss' inside the NAV AI workspace. "
-                    f"They have not typed anything in chat — this is a "
-                    f"bidirectional event from the UI surface. Please respond "
-                    f"to them directly.\n\n"
-                    f"Selected context:\n{context_blob}\n\n"
-                    f"Request: {prompt}"
-                ),
-            }
-        ],
-        "structuredContent": {
-            "kind": kind,
-            "headline": headline,
-            "prompt": prompt,
-            "selection": context,
-        },
-    }
-
-
 ToolHandler = Callable[[dict[str, Any], str | None], Awaitable[dict[str, Any]]]
 
 TOOL_HANDLERS: dict[str, ToolHandler] = {
@@ -247,5 +175,4 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "submit_pricing_change": submit_pricing_change,
     "start_forecast": start_forecast,
     "lookup_product": lookup_product,
-    "discuss_selection": discuss_selection,
 }

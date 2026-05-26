@@ -69,7 +69,14 @@ These are the moments that distinguish a working MCP Apps implementation from a 
 
 ### 1. Iframe → host model (bidirectional)
 
-Run a forecast, then click **Discuss this forecast with Claude** on the result panel. The iframe calls `discuss_selection` over `tools/call`. The tool response is text written *to* the model, and Claude replies in the chat thread — even though the user never typed anything. Same pattern is wired into the pricing receipt and catalog views.
+Run a forecast, then click **Send to chat** on the result panel. The iframe calls the MCP Apps host directly via two methods:
+
+- **`updateModelContext`** — pushes the full structured selection (region, baseline_units, uplift_pct, confidence, etc.) into the model's context without crowding the visible chat.
+- **`sendMessage`** — injects a short `user`-role trigger (`analyze this forecast`) into the chat thread. The host treats it as if the user typed it, and Claude responds inline.
+
+Same pattern on the pricing receipt (`review this pricing change`) and catalog entry (`summarize this product`). No `tools/call` round-trip via the server — this is iframe ↔ host direct.
+
+**Graceful fallback**: if the host doesn't implement `sendMessage`/`updateModelContext` (older host or a different wire-name), the iframe reveals a chat-prompt hint the user can paste instead. The wire method name is auto-resolved at runtime by trying a couple of candidates (`sendMessage` and `ui/sendMessage`) — whichever succeeds is cached for the session. Both branches are visible on `/diagnostics` as `ui.sendMessage.ok` or `ui.sendMessage.fail`.
 
 ### 2. Server-pushed resource updates
 

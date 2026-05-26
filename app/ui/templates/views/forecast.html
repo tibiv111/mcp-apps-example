@@ -48,13 +48,17 @@
       <div><div class="k">Confidence</div><div class="v" id="fr-confidence">—</div></div>
       <div><div class="k">Job</div><div class="v" id="fr-job" style="font-size:13px">—</div></div>
     </div>
-    {# Bidirectional path: iframe calls a tool whose result is addressed to
-       the model. Claude responds in the chat thread without the user typing. #}
+    {# Iframe → host tool call. Stages the selection into the chat thread as
+       a tool artifact and surfaces a follow-up prompt the user can paste. #}
     <div class="result-actions">
       <button class="discuss" id="discuss-forecast" onclick="discussForecast()">
-        <span class="ico">↗</span> Discuss this forecast with Claude
+        <span class="ico">↗</span> Send to chat
       </button>
-      <span class="discuss-hint">Sends the result back through MCP so the assistant comments inline.</span>
+      <span class="discuss-hint">Stages this result as a tool artifact so Claude has full context.</span>
+      <div class="chat-hint hidden" id="hint-forecast">
+        <span class="chat-hint-tag">↩ now in chat</span>
+        <code>analyze this forecast</code>
+      </div>
     </div>
   </div>
 </section>

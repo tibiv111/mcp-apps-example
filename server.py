@@ -1,34 +1,25 @@
 """
-NAV AI mock MCP server with MCP Apps UI.
+NAV AI mock MCP server with MCP Apps UI (SEP-1865 compliant).
 
 Single-file FastAPI app that implements:
   * Streamable HTTP MCP transport (JSON-RPC 2.0)
   * Mocked OAuth 2.1 endpoints (any creds work)
-  * A shell ui:// resource that lets the user pick one of 3 mock workflows
-  * Three workflow tools, each backed by its own ui:// resource:
-      - dashboard:   static read-only view
-      - form:        submit a form, get a result
-      - long_job:    enqueue a job, watch live progress
-
-Designed to be readable in one sitting, not production-grade.
+  * One `ui://` shell resource that contains all three demo "apps",
+    navigated internally in JS (no iframe swap between views)
+  * Proper MCP Apps protocol: text/html;profile=mcp-app mimeType,
+    JSON-RPC over postMessage, ui/initialize handshake
+  * Direct SSE channel for live job progress, bypassing MCP notifications
 
 Endpoints
 ---------
   GET  /                                      health check
-  POST /mcp                                   MCP JSON-RPC (Streamable HTTP)
+  POST /mcp                                   MCP JSON-RPC
   GET  /.well-known/oauth-authorization-server   OAuth discovery
-  POST /oauth/register                        Dynamic Client Registration (mocked)
-  GET  /oauth/authorize                       authorization endpoint (auto-approves)
-  POST /oauth/token                           token endpoint (any code -> token)
-  GET  /ui/{name}                             serves UI HTML for ui:// resources
+  POST /oauth/register                        DCR (mocked)
+  GET  /oauth/authorize                       authorization (auto-approves)
+  POST /oauth/token                           token (any code -> token)
+  GET  /ui/shell                              browser preview of the shell HTML
   GET  /jobs/{job_id}/events                  SSE stream of job progress
-  POST /api/jobs                              direct job creation (called from iframe)
-
-Run locally:
-    pip install fastapi uvicorn sse-starlette
-    uvicorn server:app --host 0.0.0.0 --port 8000
-
-Deploy on Render: see render.yaml.
 """
 
 from __future__ import annotations
@@ -45,14 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-# ─────────────────────────────────────────────────────────────────────────────
-# App setup
-# ─────────────────────────────────────────────────────────────────────────────
-
 app = FastAPI(title="NAV AI Mock MCP Server")
 
-# Allow the Claude iframe origin to call our direct endpoints (SSE, /api/jobs).
-# In production you'd lock this down; for a mock, * is fine.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,25 +46,28 @@ app.add_middleware(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROTOCOL_VERSION = "2025-06-18"
+UI_MIME_TYPE = "text/html;profile=mcp-app"
+SHELL_URI = "ui://nav-ai/shell"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # In-memory state
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Mock OAuth: pretend we issued tokens. Real flow returns these; we don't check.
 _issued_tokens: set[str] = set()
-
-# Mock job store. Real version would be Postgres + Redis pub/sub.
 _jobs: dict[str, dict[str, Any]] = {}
 _job_subscribers: dict[str, list[asyncio.Queue]] = {}
 
 
 def _emit_job_event(job_id: str, event: dict[str, Any]) -> None:
-    """Push an event to all SSE subscribers for this job."""
     for q in _job_subscribers.get(job_id, []):
         q.put_nowait(event)
 
 
 async def _run_mock_job(job_id: str) -> None:
-    """Simulate a long-running job emitting progress events."""
     steps = [
         ("Validating inputs", 10),
         ("Loading reference data", 25),
@@ -104,7 +92,7 @@ async def _run_mock_job(job_id: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Health + root
+# Health
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -120,7 +108,6 @@ async def root() -> dict[str, str]:
 
 @app.get("/.well-known/oauth-authorization-server")
 async def oauth_metadata(request: Request) -> dict[str, Any]:
-    """OAuth 2.1 discovery document. Claude Desktop reads this."""
     base = str(request.base_url).rstrip("/")
     return {
         "issuer": base,
@@ -136,7 +123,6 @@ async def oauth_metadata(request: Request) -> dict[str, Any]:
 
 @app.post("/oauth/register")
 async def oauth_register(req: Request) -> dict[str, Any]:
-    """Dynamic Client Registration — accept anything, return fake credentials."""
     body = await req.json()
     return {
         "client_id": f"mock-client-{secrets.token_hex(8)}",
@@ -159,10 +145,6 @@ async def oauth_authorize(
     code_challenge_method: str = "",
     scope: str = "",
 ) -> HTMLResponse:
-    """
-    Authorization endpoint. Real Entra would show a login screen here.
-    We auto-approve and redirect with a fake code.
-    """
     code = f"mock-code-{secrets.token_hex(12)}"
     redirect = f"{redirect_uri}?code={code}&state={state}"
     return HTMLResponse(
@@ -181,7 +163,6 @@ async def oauth_authorize(
 
 @app.post("/oauth/token")
 async def oauth_token(req: Request) -> dict[str, Any]:
-    """Token endpoint. Any code/refresh token mints a fresh access token."""
     token = f"mock-token-{secrets.token_hex(24)}"
     _issued_tokens.add(token)
     return {
@@ -194,83 +175,60 @@ async def oauth_token(req: Request) -> dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MCP protocol — Streamable HTTP, JSON-RPC 2.0
+# MCP handlers
 # ─────────────────────────────────────────────────────────────────────────────
 
-PROTOCOL_VERSION = "2025-06-18"
 
-
-def _ui_resource_uri(name: str) -> str:
-    return f"ui://nav-ai/{name}"
-
-
-def _ui_meta(name: str, base_url: str) -> dict[str, Any]:
-    """
-    The _meta.ui block hosts annotate to render UI inline.
-    The 'domain' field is required by Claude (see MCP Apps SEP-1865).
-    """
-    import hashlib
-
-    domain_hash = hashlib.sha256(base_url.encode()).hexdigest()[:32]
-    return {
-        "ui": {
-            "resourceUri": _ui_resource_uri(name),
-            "domain": f"{domain_hash}.claudemcpcontent.com",
-            "csp": {
-                "connectDomains": [base_url],
-                "resourceDomains": [base_url],
-            },
-        }
-    }
-
-
-# Tool definitions. Each tool optionally points at a ui:// resource via _meta.
-def _tools_list(base_url: str) -> list[dict[str, Any]]:
+def _tools_list() -> list[dict[str, Any]]:
+    """All tools. The launcher tool points at the shell ui:// resource."""
     return [
         {
             "name": "launch_nav_ai",
-            "description": "Open the NAV AI launcher in Claude. Shows the three available workflows.",
+            "description": "Open the NAV AI launcher in Claude. Shows a UI with three demo workflows.",
             "inputSchema": {"type": "object", "properties": {}, "required": []},
-            "_meta": _ui_meta("shell", base_url),
-        },
-        {
-            "name": "open_dashboard",
-            "description": "Open the read-only Sales Dashboard workflow.",
-            "inputSchema": {"type": "object", "properties": {}, "required": []},
-            "_meta": _ui_meta("dashboard", base_url),
-        },
-        {
-            "name": "open_pricing_form",
-            "description": "Open the Pricing Adjustment workflow (a form that submits a price change).",
-            "inputSchema": {"type": "object", "properties": {}, "required": []},
-            "_meta": _ui_meta("form", base_url),
-        },
-        {
-            "name": "open_forecast_job",
-            "description": "Open the Forecast Run workflow — kicks off a long-running forecast and streams progress.",
-            "inputSchema": {"type": "object", "properties": {}, "required": []},
-            "_meta": _ui_meta("long_job", base_url),
+            "_meta": {"ui": {"resourceUri": SHELL_URI}},
         },
         {
             "name": "start_forecast",
-            "description": "Start a forecast job. Returns a job ID; the iframe subscribes to live updates over SSE.",
+            "description": "Start a long-running forecast job. Returns a job ID; live progress is streamed over SSE.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"region": {"type": "string", "default": "EU"}},
                 "required": [],
             },
         },
+        {
+            "name": "submit_pricing_change",
+            "description": "Submit a pricing change for review. Synchronous tool — returns a confirmation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "product": {"type": "string"},
+                    "new_price": {"type": "number"},
+                },
+                "required": ["product", "new_price"],
+            },
+        },
     ]
 
 
 def _resource_list(base_url: str) -> list[dict[str, Any]]:
+    """The shell resource, with CSP metadata so the iframe can hit our SSE endpoint."""
     return [
         {
-            "uri": _ui_resource_uri(n),
-            "name": f"NAV AI {n} UI",
-            "mimeType": "text/html",
+            "uri": SHELL_URI,
+            "name": "NAV AI Launcher",
+            "description": "NAV AI workflow launcher and demo apps.",
+            "mimeType": UI_MIME_TYPE,
+            "_meta": {
+                "ui": {
+                    "csp": {
+                        "connectDomains": [base_url],
+                    },
+                    "prefersBorder": True,
+                }
+            },
         }
-        for n in ("shell", "dashboard", "form", "long_job")
     ]
 
 
@@ -281,12 +239,12 @@ async def _handle_initialize(_params: dict[str, Any]) -> dict[str, Any]:
             "tools": {"listChanged": False},
             "resources": {"listChanged": False, "subscribe": False},
         },
-        "serverInfo": {"name": "nav-ai-mock", "version": "0.1.0"},
+        "serverInfo": {"name": "nav-ai-mock", "version": "0.2.0"},
     }
 
 
-async def _handle_tools_list(base_url: str) -> dict[str, Any]:
-    return {"tools": _tools_list(base_url)}
+async def _handle_tools_list() -> dict[str, Any]:
+    return {"tools": _tools_list()}
 
 
 async def _handle_resources_list(base_url: str) -> dict[str, Any]:
@@ -295,44 +253,35 @@ async def _handle_resources_list(base_url: str) -> dict[str, Any]:
 
 async def _handle_resources_read(params: dict[str, Any], base_url: str) -> dict[str, Any]:
     uri = params.get("uri", "")
-    # ui://nav-ai/<name>  →  /ui/<name>
-    name = uri.rsplit("/", 1)[-1] if uri.startswith("ui://nav-ai/") else None
-    if name is None:
+    if uri != SHELL_URI:
         return {"contents": []}
-    html = _render_ui_html(name, base_url)
     return {
         "contents": [
             {
-                "uri": uri,
-                "mimeType": "text/html",
-                "text": html,
+                "uri": SHELL_URI,
+                "mimeType": UI_MIME_TYPE,
+                "text": _render_shell_html(base_url),
+                "_meta": {
+                    "ui": {
+                        "csp": {"connectDomains": [base_url]},
+                        "prefersBorder": True,
+                    }
+                },
             }
         ]
     }
 
 
-async def _handle_tools_call(params: dict[str, Any], base_url: str) -> dict[str, Any]:
+async def _handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
     name = params.get("name", "")
     args = params.get("arguments", {}) or {}
 
     if name == "launch_nav_ai":
-        return _tool_result(
-            text="NAV AI launcher opened. Pick a workflow.",
-            ui_name="shell",
-            base_url=base_url,
-        )
-    if name == "open_dashboard":
-        return _tool_result(text="Sales dashboard opened.", ui_name="dashboard", base_url=base_url)
-    if name == "open_pricing_form":
-        return _tool_result(
-            text="Pricing adjustment form opened.", ui_name="form", base_url=base_url
-        )
-    if name == "open_forecast_job":
-        return _tool_result(
-            text="Forecast workflow opened. Press Start to run.",
-            ui_name="long_job",
-            base_url=base_url,
-        )
+        # This tool's _meta.ui.resourceUri tells the host to render the shell.
+        return {
+            "content": [{"type": "text", "text": "NAV AI launcher opened."}],
+        }
+
     if name == "start_forecast":
         job_id = f"job-{uuid.uuid4().hex[:8]}"
         _jobs[job_id] = {
@@ -354,30 +303,34 @@ async def _handle_tools_call(params: dict[str, Any], base_url: str) -> dict[str,
             "structuredContent": {"job_id": job_id, "status": "queued"},
         }
 
+    if name == "submit_pricing_change":
+        product = args.get("product", "")
+        price = args.get("new_price", 0)
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"Pricing change queued: {product} → €{price:.2f}",
+                }
+            ],
+            "structuredContent": {
+                "product": product,
+                "new_price": price,
+                "status": "queued_for_review",
+                "ticket": f"PR-{secrets.token_hex(4).upper()}",
+            },
+        }
+
     return {
         "content": [{"type": "text", "text": f"Unknown tool: {name}"}],
         "isError": True,
     }
 
 
-def _tool_result(*, text: str, ui_name: str, base_url: str) -> dict[str, Any]:
-    """Tool result that points at a ui:// resource for inline UI rendering."""
-    return {
-        "content": [{"type": "text", "text": text}],
-        "_meta": _ui_meta(ui_name, base_url),
-    }
-
-
 @app.post("/mcp")
 async def mcp_endpoint(req: Request) -> Response:
-    """
-    Single JSON-RPC endpoint. Streamable HTTP allows both single responses
-    and streaming, but for a mock we keep it to plain JSON responses.
-    """
     base_url = str(req.base_url).rstrip("/")
     body = await req.json()
-
-    # JSON-RPC dispatch
     method = body.get("method", "")
     params = body.get("params", {}) or {}
     req_id = body.get("id")
@@ -386,15 +339,14 @@ async def mcp_endpoint(req: Request) -> Response:
         if method == "initialize":
             result = await _handle_initialize(params)
         elif method == "tools/list":
-            result = await _handle_tools_list(base_url)
+            result = await _handle_tools_list()
         elif method == "tools/call":
-            result = await _handle_tools_call(params, base_url)
+            result = await _handle_tools_call(params)
         elif method == "resources/list":
             result = await _handle_resources_list(base_url)
         elif method == "resources/read":
             result = await _handle_resources_read(params, base_url)
         elif method == "notifications/initialized":
-            # Notification — no response.
             return Response(status_code=202)
         elif method == "ping":
             result = {}
@@ -406,7 +358,6 @@ async def mcp_endpoint(req: Request) -> Response:
                     "error": {"code": -32601, "message": f"Method not found: {method}"},
                 }
             )
-
         return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": result})
     except Exception as e:
         return JSONResponse(
@@ -419,18 +370,15 @@ async def mcp_endpoint(req: Request) -> Response:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Direct endpoints used by the iframe (SSE + job API)
+# Direct iframe endpoints (SSE for live job progress)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @app.get("/jobs/{job_id}/events")
 async def job_events(job_id: str) -> EventSourceResponse:
-    """SSE stream of job progress. The iframe opens this directly."""
-
     async def stream():
         q: asyncio.Queue = asyncio.Queue()
         _job_subscribers.setdefault(job_id, []).append(q)
-        # Replay current state immediately so a late subscriber catches up.
         if job_id in _jobs:
             yield {"data": json.dumps({"type": "snapshot", **_jobs[job_id]})}
         try:
@@ -451,258 +399,274 @@ async def get_job(job_id: str) -> dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UI: served as HTML, embedded in the MCP resources/read response.
-# Each HTML page is self-contained — no external scripts, no localStorage,
-# only fetch/SSE back to our own backend (allowed via csp.connectDomains).
+# UI: single shell HTML with internal routing.
+# Uses JSON-RPC over postMessage as MCP Apps spec mandates.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _ui_html_shared_head(title: str) -> str:
-    return f"""
-    <meta charset="utf-8" />
-    <title>{title}</title>
-    <style>
-      body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-              margin: 0; padding: 16px; background: #fafafa; color: #222; }}
-      h1, h2 {{ margin: 0 0 12px 0; }}
-      .card {{ background: #fff; border: 1px solid #e3e3e3; border-radius: 8px;
-               padding: 16px; margin-bottom: 12px; }}
-      button {{ background: #5436DA; color: white; border: none; padding: 8px 14px;
-                border-radius: 6px; cursor: pointer; font-size: 14px; }}
-      button:hover {{ background: #4226c4; }}
-      button:disabled {{ background: #999; cursor: not-allowed; }}
-      input, select {{ padding: 6px; border: 1px solid #ccc; border-radius: 4px;
-                       font-size: 14px; }}
-      .grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }}
-      .progress {{ height: 10px; background: #eee; border-radius: 5px; overflow: hidden; }}
-      .bar {{ height: 100%; background: #5436DA; width: 0%; transition: width 0.4s; }}
-      .muted {{ color: #888; font-size: 13px; }}
-      pre {{ background: #f0f0f0; padding: 8px; border-radius: 4px; overflow-x: auto; }}
-    </style>
-    """
+def _render_shell_html(base_url: str) -> str:
+    """The whole UI lives in one HTML file. All navigation is internal."""
+    return r"""<!doctype html><html><head>
+<meta charset="utf-8" />
+<title>NAV AI</title>
+<style>
+  :root {
+    --bg: var(--color-background-primary, #fafafa);
+    --card-bg: var(--color-background-secondary, #fff);
+    --text: var(--color-text-primary, #222);
+    --muted: var(--color-text-tertiary, #888);
+    --border: var(--color-border-primary, #e3e3e3);
+    --accent: #5436DA;
+  }
+  body { font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+         margin: 0; padding: 16px; background: var(--bg); color: var(--text); }
+  h1, h2 { margin: 0 0 12px 0; }
+  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px;
+          padding: 16px; margin-bottom: 12px; }
+  button { background: var(--accent); color: white; border: none; padding: 8px 14px;
+           border-radius: 6px; cursor: pointer; font-size: 14px; }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { background: #999; cursor: not-allowed; }
+  input, select { padding: 6px; border: 1px solid var(--border); border-radius: 4px;
+                  font-size: 14px; background: var(--card-bg); color: var(--text); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .progress { height: 10px; background: var(--border); border-radius: 5px; overflow: hidden; }
+  .bar { height: 100%; background: var(--accent); width: 0%; transition: width 0.4s; }
+  .muted { color: var(--muted); font-size: 13px; }
+  pre { background: var(--border); padding: 8px; border-radius: 4px; overflow-x: auto;
+        color: var(--text); }
+  .nav { margin-bottom: 12px; }
+  .nav button { background: none; color: var(--accent); padding: 4px 8px; }
+  .hidden { display: none; }
+</style>
+</head><body>
+
+<div id="view-launcher">
+  <h1>NAV AI Launcher</h1>
+  <p class="muted">Pick a workflow. Each card opens a view in this same panel.</p>
+  <div class="grid">
+    <div class="card">
+      <h2>📊 Sales Dashboard</h2>
+      <p class="muted">Read-only view of regional sales.</p>
+      <button onclick="show('dashboard')">Open</button>
+    </div>
+    <div class="card">
+      <h2>💰 Pricing Adjustment</h2>
+      <p class="muted">Submit a price change. Calls a tool, result goes to chat.</p>
+      <button onclick="show('form')">Open</button>
+    </div>
+    <div class="card">
+      <h2>📈 Forecast Run</h2>
+      <p class="muted">Long-running job. Live progress over SSE.</p>
+      <button onclick="show('forecast')">Open</button>
+    </div>
+  </div>
+</div>
+
+<div id="view-dashboard" class="hidden">
+  <div class="nav"><button onclick="show('launcher')">← Back</button></div>
+  <h1>📊 Sales Dashboard</h1>
+  <p class="muted">Region-level snapshot.</p>
+  <div class="grid">
+    <div class="card"><h2>EU</h2><p style="font-size:28px;margin:0">€1.42M</p>
+      <p class="muted">+4.2%</p></div>
+    <div class="card"><h2>NA</h2><p style="font-size:28px;margin:0">$2.08M</p>
+      <p class="muted">+1.7%</p></div>
+    <div class="card"><h2>APAC</h2><p style="font-size:28px;margin:0">$0.95M</p>
+      <p class="muted">-0.5%</p></div>
+  </div>
+  <div class="card">
+    <h2>Top products</h2>
+    <ol><li>Widget Pro — 12,402</li><li>Gadget Lite — 9,118</li><li>Tool X — 6,540</li></ol>
+  </div>
+</div>
+
+<div id="view-form" class="hidden">
+  <div class="nav"><button onclick="show('launcher')">← Back</button></div>
+  <h1>💰 Pricing Adjustment</h1>
+  <div class="card">
+    <p>Submitting calls the <code>submit_pricing_change</code> tool through Claude.</p>
+    <label>Product
+      <select id="product">
+        <option>Widget Pro</option><option>Gadget Lite</option><option>Tool X</option>
+      </select>
+    </label>
+    &nbsp;
+    <label>New price (€)
+      <input id="price" type="number" value="49.99" step="0.01" />
+    </label>
+    <p><button id="submit-pricing">Submit</button></p>
+    <div id="pricing-result"></div>
+  </div>
+</div>
+
+<div id="view-forecast" class="hidden">
+  <div class="nav"><button onclick="show('launcher')">← Back</button></div>
+  <h1>📈 Forecast Run</h1>
+  <div class="card">
+    <p>Click Start. Tool returns a job ID; iframe subscribes to live SSE updates.</p>
+    <label>Region
+      <select id="region">
+        <option>EU</option><option>NA</option><option>APAC</option>
+      </select>
+    </label>
+    <p><button id="start-forecast">Start forecast</button></p>
+    <div id="forecast-status"></div>
+  </div>
+</div>
+
+<script>
+  // ── Configuration injected from the server ─────────────────────────────────
+  const BASE_URL = __BASE_URL__;
+
+  // ── View routing (all in one iframe) ───────────────────────────────────────
+  function show(name) {
+    for (const id of ['launcher', 'dashboard', 'form', 'forecast']) {
+      document.getElementById('view-' + id).classList.toggle('hidden', id !== name);
+    }
+  }
+
+  // ── MCP Apps JSON-RPC over postMessage ─────────────────────────────────────
+  // Per SEP-1865, the View is conceptually an MCP client; the Host is the server.
+  // Messages flow through window.parent.postMessage and replies come via
+  // 'message' events. Requests carry an id; notifications don't.
+
+  let nextId = 1;
+  const pending = new Map();
+
+  function sendRequest(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = nextId++;
+      pending.set(id, { resolve, reject });
+      window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+    });
+  }
+
+  function sendNotification(method, params) {
+    window.parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
+  }
+
+  window.addEventListener('message', (event) => {
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== '2.0') return;
+    if (msg.id != null && pending.has(msg.id)) {
+      const { resolve, reject } = pending.get(msg.id);
+      pending.delete(msg.id);
+      if (msg.error) reject(new Error(msg.error.message || 'RPC error'));
+      else resolve(msg.result);
+    }
+    // We could also handle ui/notifications/* here (tool-input, tool-result,
+    // host-context-changed, etc.) but the launcher doesn't need them.
+  });
+
+  // ── Lifecycle: ui/initialize handshake ─────────────────────────────────────
+  // The View MUST send ui/initialize and wait for the result before
+  // making any other requests.
+
+  (async () => {
+    try {
+      const result = await sendRequest('ui/initialize', {
+        protocolVersion: '2025-06-18',
+        clientInfo: { name: 'nav-ai-shell', version: '0.2.0' },
+        appCapabilities: {
+          availableDisplayModes: ['inline', 'fullscreen'],
+        },
+        capabilities: {},
+      });
+      // Apply theme variables if the host provided them.
+      const vars = result?.hostContext?.styles?.variables;
+      if (vars) {
+        for (const [k, v] of Object.entries(vars)) {
+          if (v) document.documentElement.style.setProperty(k, v);
+        }
+      }
+      sendNotification('ui/notifications/initialized', {});
+    } catch (err) {
+      console.warn('ui/initialize failed (likely running outside a host):', err);
+    }
+  })();
+
+  // ── Pricing form: calls a tool via the host ────────────────────────────────
+  document.getElementById('submit-pricing').onclick = async () => {
+    const product = document.getElementById('product').value;
+    const price = parseFloat(document.getElementById('price').value);
+    const out = document.getElementById('pricing-result');
+    out.innerHTML = '<p class="muted">Calling submit_pricing_change…</p>';
+    try {
+      const result = await sendRequest('tools/call', {
+        name: 'submit_pricing_change',
+        arguments: { product, new_price: price },
+      });
+      const sc = result?.structuredContent || {};
+      out.innerHTML =
+        '<div class="card" style="background:#e8f5e8;color:#222">' +
+        '<strong>✓ Submitted</strong><br>' +
+        '<span class="muted">Ticket: ' + (sc.ticket || '?') + '</span>' +
+        '</div>';
+    } catch (err) {
+      out.innerHTML = '<p class="muted">Error: ' + err.message + '</p>';
+    }
+  };
+
+  // ── Forecast: tool returns job_id, iframe subscribes to SSE directly ───────
+  document.getElementById('start-forecast').onclick = async () => {
+    const region = document.getElementById('region').value;
+    const btn = document.getElementById('start-forecast');
+    const out = document.getElementById('forecast-status');
+    btn.disabled = true;
+    out.innerHTML = '<p class="muted">Starting…</p>';
+    try {
+      const result = await sendRequest('tools/call', {
+        name: 'start_forecast',
+        arguments: { region },
+      });
+      const jobId = result?.structuredContent?.job_id;
+      if (!jobId) throw new Error('no job_id returned');
+      subscribe(jobId);
+    } catch (err) {
+      out.innerHTML = '<p class="muted">Error: ' + err.message + '</p>';
+      btn.disabled = false;
+    }
+  };
+
+  function subscribe(jobId) {
+    const out = document.getElementById('forecast-status');
+    out.innerHTML =
+      '<p><strong>Job:</strong> <code>' + jobId + '</code></p>' +
+      '<div class="progress"><div class="bar" id="bar"></div></div>' +
+      '<p class="muted" id="step">Waiting for first update…</p>' +
+      '<pre id="result" style="display:none"></pre>';
+
+    const es = new EventSource(BASE_URL + '/jobs/' + jobId + '/events');
+    es.onmessage = (e) => {
+      const ev = JSON.parse(e.data);
+      if (ev.type === 'progress' || ev.type === 'snapshot') {
+        if (ev.progress != null) document.getElementById('bar').style.width = ev.progress + '%';
+        if (ev.step) document.getElementById('step').innerText = ev.step;
+      } else if (ev.type === 'done') {
+        document.getElementById('bar').style.width = '100%';
+        document.getElementById('step').innerText = '✓ Complete';
+        const r = document.getElementById('result');
+        r.style.display = 'block';
+        r.innerText = JSON.stringify(ev.result, null, 2);
+        document.getElementById('start-forecast').disabled = false;
+        es.close();
+      }
+    };
+    es.onerror = () => {
+      document.getElementById('step').innerText = 'SSE connection error.';
+      document.getElementById('start-forecast').disabled = false;
+      es.close();
+    };
+  }
+</script>
+</body></html>
+""".replace("__BASE_URL__", json.dumps(base_url))
 
 
-def _ui_shell_html(base_url: str) -> str:
-    """The launcher shell — three cards, click to call a tool."""
-    return f"""
-    <!doctype html><html><head>{_ui_html_shared_head("NAV AI")}</head><body>
-      <h1>NAV AI Launcher</h1>
-      <p class="muted">Pick a workflow to open. Each card calls a tool back through Claude.</p>
-      <div class="grid">
-        <div class="card">
-          <h2>📊 Sales Dashboard</h2>
-          <p class="muted">Read-only view of regional sales.</p>
-          <button onclick="callTool('open_dashboard')">Open</button>
-        </div>
-        <div class="card">
-          <h2>💰 Pricing Adjustment</h2>
-          <p class="muted">Submit a price change for review.</p>
-          <button onclick="callTool('open_pricing_form')">Open</button>
-        </div>
-        <div class="card">
-          <h2>📈 Forecast Run</h2>
-          <p class="muted">Run a forecast — streams live progress.</p>
-          <button onclick="callTool('open_forecast_job')">Open</button>
-        </div>
-      </div>
-      <script>
-        // AppBridge protocol: postMessage to the host (Claude) to call a tool.
-        // The host then handles the tool call and may swap our iframe to the
-        // new tool's ui:// resource.
-        function callTool(name, args = {{}}) {{
-          window.parent.postMessage({{
-            type: 'tool',
-            payload: {{ name, arguments: args }},
-          }}, '*');
-        }}
-      </script>
-    </body></html>
-    """
-
-
-def _ui_dashboard_html(base_url: str) -> str:
-    """Static read-only dashboard."""
-    return f"""
-    <!doctype html><html><head>{_ui_html_shared_head("Sales Dashboard")}</head><body>
-      <h1>📊 Sales Dashboard</h1>
-      <p class="muted">Region-level snapshot, refreshed daily.</p>
-      <div class="grid">
-        <div class="card"><h2>EU</h2><p style="font-size:28px;margin:0">€1.42M</p>
-          <p class="muted">+4.2% vs last month</p></div>
-        <div class="card"><h2>NA</h2><p style="font-size:28px;margin:0">$2.08M</p>
-          <p class="muted">+1.7% vs last month</p></div>
-        <div class="card"><h2>APAC</h2><p style="font-size:28px;margin:0">$0.95M</p>
-          <p class="muted">-0.5% vs last month</p></div>
-      </div>
-      <div class="card">
-        <h2>Top products</h2>
-        <ol>
-          <li>Widget Pro — 12,402 units</li>
-          <li>Gadget Lite — 9,118 units</li>
-          <li>Tool X — 6,540 units</li>
-        </ol>
-      </div>
-      <p><button onclick="back()">← Back to launcher</button></p>
-      <script>
-        function back() {{
-          window.parent.postMessage({{
-            type: 'tool', payload: {{ name: 'launch_nav_ai', arguments: {{}} }}
-          }}, '*');
-        }}
-      </script>
-    </body></html>
-    """
-
-
-def _ui_form_html(base_url: str) -> str:
-    """A form that, on submit, fetches our backend directly (not via MCP)."""
-    return f"""
-    <!doctype html><html><head>{_ui_html_shared_head("Pricing Adjustment")}</head><body>
-      <h1>💰 Pricing Adjustment</h1>
-      <div class="card">
-        <p>Submit a price change. (Direct call to backend — no tool round-trip.)</p>
-        <label>Product
-          <select id="product">
-            <option>Widget Pro</option>
-            <option>Gadget Lite</option>
-            <option>Tool X</option>
-          </select>
-        </label>
-        &nbsp;
-        <label>New price
-          <input id="price" type="number" value="49.99" step="0.01" />
-        </label>
-        <p><button id="submit">Submit</button></p>
-        <div id="result"></div>
-      </div>
-      <p><button onclick="back()">← Back to launcher</button></p>
-      <script>
-        const BASE = {json.dumps(base_url)};
-        document.getElementById('submit').onclick = async () => {{
-          const product = document.getElementById('product').value;
-          const price = document.getElementById('price').value;
-          document.getElementById('result').innerHTML = '<p class="muted">Submitting…</p>';
-          // Pretend submit — in real life this would POST to /api/pricing
-          await new Promise(r => setTimeout(r, 700));
-          document.getElementById('result').innerHTML =
-            '<div class="card" style="background:#e8f5e8">' +
-            '<strong>✓ Submitted</strong><br>' +
-            '<span class="muted">' + product + ' → €' + price + ' queued for review.</span>' +
-            '</div>';
-        }};
-        function back() {{
-          window.parent.postMessage({{
-            type: 'tool', payload: {{ name: 'launch_nav_ai', arguments: {{}} }}
-          }}, '*');
-        }}
-      </script>
-    </body></html>
-    """
-
-
-def _ui_long_job_html(base_url: str) -> str:
-    """Long-running job: tool kicks it off, SSE streams progress."""
-    return f"""
-    <!doctype html><html><head>{_ui_html_shared_head("Forecast Run")}</head><body>
-      <h1>📈 Forecast Run</h1>
-      <div class="card">
-        <p>Run a regional forecast. Tool call enqueues a job, then the UI
-           subscribes to live progress over SSE.</p>
-        <label>Region
-          <select id="region">
-            <option>EU</option><option>NA</option><option>APAC</option>
-          </select>
-        </label>
-        <p><button id="start">Start forecast</button></p>
-        <div id="status"></div>
-      </div>
-      <p><button onclick="back()">← Back to launcher</button></p>
-      <script>
-        const BASE = {json.dumps(base_url)};
-        const startBtn = document.getElementById('start');
-        const statusEl = document.getElementById('status');
-
-        startBtn.onclick = () => {{
-          const region = document.getElementById('region').value;
-          startBtn.disabled = true;
-          statusEl.innerHTML = '<p class="muted">Asking Claude to start the job…</p>';
-
-          // Listen for the tool result coming back from the host.
-          const handler = (e) => {{
-            const msg = e.data;
-            if (msg && msg.type === 'toolResult' && msg.payload
-                && msg.payload.structuredContent
-                && msg.payload.structuredContent.job_id) {{
-              window.removeEventListener('message', handler);
-              subscribe(msg.payload.structuredContent.job_id);
-            }}
-          }};
-          window.addEventListener('message', handler);
-
-          // Call the tool via the host.
-          window.parent.postMessage({{
-            type: 'tool',
-            payload: {{ name: 'start_forecast', arguments: {{ region }} }},
-          }}, '*');
-        }};
-
-        function subscribe(jobId) {{
-          statusEl.innerHTML =
-            '<p><strong>Job:</strong> <code>' + jobId + '</code></p>' +
-            '<div class="progress"><div class="bar" id="bar"></div></div>' +
-            '<p class="muted" id="step">Waiting for first update…</p>' +
-            '<pre id="result" style="display:none"></pre>';
-
-          const es = new EventSource(BASE + '/jobs/' + jobId + '/events');
-          es.onmessage = (e) => {{
-            const ev = JSON.parse(e.data);
-            if (ev.type === 'progress' || ev.type === 'snapshot') {{
-              if (ev.progress != null)
-                document.getElementById('bar').style.width = ev.progress + '%';
-              if (ev.step)
-                document.getElementById('step').innerText = ev.step;
-            }} else if (ev.type === 'done') {{
-              document.getElementById('bar').style.width = '100%';
-              document.getElementById('step').innerText = '✓ Complete';
-              const r = document.getElementById('result');
-              r.style.display = 'block';
-              r.innerText = JSON.stringify(ev.result, null, 2);
-              startBtn.disabled = false;
-              es.close();
-            }}
-          }};
-          es.onerror = () => {{
-            document.getElementById('step').innerText = 'Connection error.';
-            startBtn.disabled = false;
-            es.close();
-          }};
-        }}
-
-        function back() {{
-          window.parent.postMessage({{
-            type: 'tool', payload: {{ name: 'launch_nav_ai', arguments: {{}} }}
-          }}, '*');
-        }}
-      </script>
-    </body></html>
-    """
-
-
-def _render_ui_html(name: str, base_url: str) -> str:
-    if name == "shell":
-        return _ui_shell_html(base_url)
-    if name == "dashboard":
-        return _ui_dashboard_html(base_url)
-    if name == "form":
-        return _ui_form_html(base_url)
-    if name == "long_job":
-        return _ui_long_job_html(base_url)
-    return "<p>Unknown UI</p>"
-
-
-# Also serve the same HTML on a plain /ui/<name> route — handy for opening
-# in a browser to preview the UI without going through Claude.
-@app.get("/ui/{name}", response_class=HTMLResponse)
-async def ui_preview(name: str, request: Request) -> HTMLResponse:
+@app.get("/ui/shell", response_class=HTMLResponse)
+async def ui_preview(request: Request) -> HTMLResponse:
+    """Browser preview of the shell HTML — buttons that call tools won't work
+    here (no MCP host listening), but navigation and CSS render correctly."""
     base_url = str(request.base_url).rstrip("/")
-    return HTMLResponse(_render_ui_html(name, base_url))
+    return HTMLResponse(_render_shell_html(base_url))

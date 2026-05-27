@@ -1,7 +1,7 @@
 (function(){
   // BASE_URL is set by the page before this script loads.
   const BASE_URL = window.NAV_AI_BASE_URL;
-  const VIEWS = ['launcher','dashboard','form','forecast','catalog'];
+  const VIEWS = ['launcher','dashboard','form','forecast','catalog','shiny'];
 
   // ── /diagnostics tap ──
   // Cheap fire-and-forget that drops a marker on the trace bus so the

@@ -21,6 +21,13 @@ services:
       # service (combined-mode default) instead of the separate backend.
       - key: BACKEND_URL
         sync: false
+      # Set after the SHINY service is deployed, to its URL, e.g.
+      #   https://nav-ai-mock-shiny.onrender.com
+      # The "Shiny" launcher tab iframes this URL. If unset/empty the
+      # tab renders a "not configured" placeholder and the other views
+      # are unaffected.
+      - key: SHINY_URL
+        sync: false
 
   # ─── Backend (called by the frontend's lookup_product tool) ───────────────
   - type: web
@@ -38,4 +45,24 @@ services:
       # bearer tokens. Without it the backend will reject every token,
       # since it has no shared state with the frontend.
       - key: FRONTEND_URL
+        sync: false
+
+  # ─── Shiny experimental view (iframed by the frontend) ────────────────────
+  # Docker-based because Render has no native R runtime. The Dockerfile
+  # lives at shiny/Dockerfile and runs `shiny::runApp` directly on $PORT
+  # — no Shiny Server, no Posit Connect. Free-tier cold-start is 30–60s
+  # because the R runtime takes a beat to boot.
+  - type: web
+    name: nav-ai-mock-shiny
+    runtime: docker
+    plan: free
+    rootDir: shiny
+    dockerfilePath: ./Dockerfile
+    envVars:
+      # Set to the FRONTEND service URL, e.g.
+      #   https://nav-ai-mock-mcp.onrender.com
+      # The Shiny server-side R code polls {NAV_AI_URL}/dashboard/snapshot
+      # every 3s — that endpoint lives on the FRONTEND service (it aggregates
+      # from the backend internally). Unauthenticated; no bearer required.
+      - key: NAV_AI_URL
         sync: false

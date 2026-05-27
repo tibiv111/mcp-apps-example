@@ -26,6 +26,12 @@ BACKEND_URL: str = os.environ.get("BACKEND_URL", BASE_URL).rstrip("/")
 # mode). Set → backend validates via HTTP POST to FRONTEND_URL/oauth/introspect.
 FRONTEND_URL: str | None = (os.environ.get("FRONTEND_URL") or "").rstrip("/") or None
 
+# URL of the standalone R Shiny app (see shiny/app.R). Default targets a
+# locally-running `Rscript -e 'shiny::runApp("shiny", port=3838)'`. The shell
+# iframes this URL inside the "Shiny" launcher tab. Unset/empty → tab shows
+# a "not running" placeholder instead of an iframe.
+SHINY_URL: str = (os.environ.get("SHINY_URL") or "http://localhost:3838").rstrip("/")
+
 # --- Identity ----------------------------------------------------------------
 
 SERVER_NAME: str = "nav-ai-mock"

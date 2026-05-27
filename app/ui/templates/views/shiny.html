@@ -1,0 +1,42 @@
+<section id="view-shiny" class="view hidden">
+  <div class="crumbs">
+    <button onclick="show('launcher')">← workspace</button>
+    <span class="sep">/</span><span>shiny</span>
+    <span class="sep">·</span>
+    <span style="color:var(--accent);font-family:var(--font-mono);font-size:10px">EXPERIMENT</span>
+  </div>
+  <h1 class="view-title">R Shiny — pricing live</h1>
+  <p class="view-lede">
+    Standalone R Shiny app embedded as a nested iframe. It pulls
+    <code style="font-family:var(--font-mono);color:var(--accent)">/dashboard/snapshot</code>
+    and listens to
+    <code style="font-family:var(--font-mono);color:var(--accent)">/backend/pricing-events</code>
+    on the same backend that powers the other views — so an approve/submit
+    in chat or the pricing form shows up here within a second.
+  </p>
+
+  {% if shiny_url %}
+  <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0d0d10">
+    <iframe
+      src="{{ shiny_url }}"
+      title="R Shiny — pricing live"
+      style="display:block;border:0;width:100%;height:720px;background:#0d0d10"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+      referrerpolicy="no-referrer"
+      loading="lazy"></iframe>
+  </div>
+  <p style="font-family:var(--font-mono);font-size:11px;color:var(--text-3);margin-top:10px">
+    Source: <code>{{ shiny_url }}</code> — start with
+    <code>Rscript -e "shiny::runApp('shiny', port=3838, host='127.0.0.1')"</code>.
+  </p>
+  {% else %}
+  <div class="receipt" style="border-color:var(--danger)">
+    <div class="row">
+      <span class="k">Shiny URL not set</span>
+      <span class="v" style="color:var(--danger)">
+        Set <code>SHINY_URL</code> env var, then reload. See <code>shiny/README.md</code>.
+      </span>
+    </div>
+  </div>
+  {% endif %}
+</section>

@@ -11,7 +11,7 @@ from __future__ import annotations
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .. import state
-from ..config import BASE_URL, TEMPLATES_DIR
+from ..config import BASE_URL, SHINY_URL, TEMPLATES_DIR
 
 _env = Environment(
     loader=FileSystemLoader(str(TEMPLATES_DIR)),
@@ -24,5 +24,6 @@ def render_shell_html() -> str:
     template = _env.get_template("shell.html")
     return template.render(
         base_url=BASE_URL,
+        shiny_url=SHINY_URL,
         shell_state=state.shell_state,
     )

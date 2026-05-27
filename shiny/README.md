@@ -18,7 +18,7 @@ forecast, catalog) are untouched.
 | C | Same-origin reverse proxy at `/shiny-proxy/*` | Still blocked: shell document is loaded under the host's opaque origin, so even our own service URL is cross-origin from inside the shell | Works | ~120 LOC: HTTP forwarding + HTML path rewriting + WebSocket pump. See [app/shiny_proxy.py](../app/shiny_proxy.py). |
 | D | URL-form MCP resource via `launch_shiny` tool | Rejected outright. Calling the tool from chat surfaces: `Unsupported UI resource content format: {…mimeType:"text/uri-list;profile=mcp-app"…}` | n/a | Implemented: new `launch_shiny` tool + `ui://nav-ai/shiny` URL-list resource. See [app/schemas.py](../app/schemas.py), [app/mcp/tools.py](../app/mcp/tools.py), [app/mcp/router.py](../app/mcp/router.py). |
 | E | Server-side embed via `launch_shiny_embedded` tool, rendered in-shell via `iframe.srcdoc` | Shell renders (path rewrite + srcdoc trick slip past `frame-src 'self'`), but every reactive output stayed empty. Console: `Connecting to 'wss://…/shiny-proxy/websocket/' violates connect-src 'self' https://nav-ai-mock-mcp.onrender.com`. Fix: add the `wss://` form to `connectDomains` explicitly (CSP3 scheme flex isn't honoured in practice). After redeploy, expected to render with live data. | Works | Implemented: ~80 LOC of HTML rewrite + WebSocket-constructor shim + fetch/XHR interceptors in `fetch_embedded_html`. See [app/shiny_proxy.py](../app/shiny_proxy.py) and the `ui://nav-ai/shiny-embedded` resource in [app/schemas.py](../app/schemas.py). |
-| F | Expose Shiny as a separate MCP server at `/shiny-mcp` — peer to NAV AI rather than nested inside its shell | Architecturally cleanest: each MCP server gets its own iframe slot in the host. The path rewriter + WS shim still do their work inside the resource, but the srcdoc workaround isn't needed because the host mounts the second server's resource as a fresh iframe naturally. Requires the user to add `https://…/shiny-mcp` as a separate connector in Claude. | Works (server endpoint live; render depends on Claude config) | Implemented: ~150 LOC standalone MCP dispatcher in [app/shiny_mcp.py](../app/shiny_mcp.py) reusing `fetch_embedded_html`. |
+| F | Expose Shiny as a separate MCP server at `/shiny-mcp` — peer to NAV AI rather than nested inside its shell | Server wire perfect (trace shows `tools/call launch_shiny_dashboard` → `resources/read ui://shiny/dashboard`, both 200). Per Claude's docs the host mounts a fresh iframe per tool call (multiple iframes coexist per session), but the shiny-mcp iframe didn't appear in the chat transcript. A/B test tool `launch_shiny_hello` (trivial HTML body) wired in to distinguish dispatcher bugs from embed-content bugs — open investigation. | Works (server live; mounting under investigation) | Implemented: ~250 LOC standalone MCP dispatcher with trace integration in [app/shiny_mcp.py](../app/shiny_mcp.py) reusing `fetch_embedded_html`. |
 
 ### Why each one exists
 
@@ -43,7 +43,12 @@ forecast, catalog) are untouched.
   not a sub-view of NAV AI. Expose it as its own MCP server endpoint
   and let Claude compose multiple servers. The path rewriting still
   happens (it's inherent to embedding Shiny anywhere it doesn't own
-  origin root) but the cross-resource workarounds drop away.
+  origin root) but the cross-resource workarounds drop away. Wire-
+  format perfect; the iframe mount is **under investigation** — per
+  Claude's own docs the host mounts a fresh iframe per tool call and
+  multiple iframes coexist in one session, so this should work, but
+  we haven't seen it mount yet. A `launch_shiny_hello` A/B test is
+  wired in to isolate dispatcher bugs from embed-content bugs.
 
 ### Empirical CSP findings
 
@@ -128,12 +133,46 @@ To use it, the user adds `https://nav-ai-mock-mcp.onrender.com/shiny-mcp`
 as a *second* MCP connector in their Claude config (alongside the
 existing `nav-ai-mock-mcp` one). In chat, "open the Shiny dashboard"
 prompts Claude to invoke `launch_shiny_dashboard` on the new server.
-The host should mount the dashboard in its own iframe, peer to the
-NAV AI workspace — no srcdoc workaround needed, because mounting the
-first UI resource from a fresh server is the supported path.
 
-The Shiny rewrite + WebSocket shim machinery is reused as-is. The
-only new code is the MCP dispatcher boilerplate.
+**Empirical result so far:** the host calls the tool and reads the
+resource (both 200 in the trace), but no iframe has been observed in
+the chat transcript at the corresponding assistant turn. Per the
+Claude docs the host mounts a fresh iframe per tool call (multiple
+iframes coexist per session), so this *should* work — investigation
+is ongoing.
+
+To distinguish "the dispatcher is wrong" from "the embedded Shiny
+HTML is wrong," shiny-mcp now exposes a second tool:
+
+- `launch_shiny_hello` / `ui://shiny/hello` — a trivial inline-HTML
+  resource with no Shiny content, no path rewriting, no JS shim.
+
+Ask Claude *"open the shiny hello world"* via the shiny connector.
+If an iframe appears at that turn, mounting works and the bug is in
+the dashboard's rewritten content. If neither hello nor dashboard
+mount, the bug is in the shiny-mcp dispatcher (capabilities, metadata
+shape, or some required field we're missing).
+
+### Empirical limits of MCP App rendering (in progress)
+
+The progression of experiments has converged on this shape, with one
+open thread:
+
+- Anything that requires a `<iframe src=https://...>` from inside the
+  shell is blocked by the host's `frame-src 'self' blob: data:`. Cards
+  A, B, C all hit this — including the same-origin proxy in C, because
+  the shell's `'self'` is the host's opaque origin, not our service.
+- URL-form resources (Card D) are rejected outright as unsupported MIME.
+- The path that actually puts Shiny in front of the user inside
+  Claude today is **Card E** — inline-HTML resource served by the
+  primary MCP server, rendered via the existing iframe slot, with
+  `srcdoc` populated client-side to keep the existing NAV AI surface
+  alongside.
+- **Card F is wire-correct but the iframe mount is under investigation.**
+  Claude's docs say the host mounts a fresh iframe per tool call and
+  multiple iframes coexist per session, so the second MCP server's
+  resource should render. The `launch_shiny_hello` A/B test will tell
+  us whether the gap is in our dispatcher or the embedded Shiny content.
 
 ### What Card D actually does
 

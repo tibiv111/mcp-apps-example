@@ -36,6 +36,7 @@ router = APIRouter()
 
 SHINY_MCP_SERVER_NAME = "nav-ai-shiny-mcp"
 SHINY_DASHBOARD_URI = "ui://shiny/dashboard"
+SHINY_HELLO_URI = "ui://shiny/hello"
 
 _CONNECT_DOMAINS = [
     BASE_URL,
@@ -79,6 +80,68 @@ SHINY_DASHBOARD_RESOURCE: dict[str, Any] = {
         }
     },
 }
+
+
+# Trivial Hello-world resource used to A/B-test whether shiny-mcp can mount
+# *anything* in Claude. If launch_shiny_hello mounts an iframe but
+# launch_shiny_dashboard doesn't, the bug is in the embedded Shiny content
+# (path rewriting, scripts, etc.). If neither mounts, the bug is somewhere
+# in the shiny-mcp dispatcher itself.
+SHINY_HELLO_TOOL: dict[str, Any] = {
+    "name": "launch_shiny_hello",
+    "title": "Open Shiny hello-world (A/B test)",
+    "description": (
+        "Trivial inline-HTML MCP resource. Used to verify the shiny-mcp "
+        "server can mount an iframe at all, isolating any issue in the "
+        "rewritten Shiny content from issues in the dispatcher."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    },
+    "_meta": {"ui": {"resourceUri": SHINY_HELLO_URI}},
+}
+
+
+SHINY_HELLO_RESOURCE: dict[str, Any] = {
+    "uri": SHINY_HELLO_URI,
+    "name": "Shiny hello (A/B test)",
+    "description": "Trivial inline HTML used to verify shiny-mcp can mount an iframe.",
+    "mimeType": SHELL_MIME,
+    "_meta": {"ui": {"prefersBorder": True}},
+}
+
+
+SHINY_HELLO_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>shiny-mcp hello</title>
+<style>
+  html,body{margin:0;padding:0;background:#0d0d10;color:#e6e6ea;
+    font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+  .wrap{padding:24px;max-width:680px}
+  h1{font-size:14px;letter-spacing:.16em;text-transform:uppercase;
+    color:#9aa0aa;margin:0 0 12px 0;font-weight:500}
+  p{font-size:13px;color:#9aa0aa;margin:0 0 8px 0;line-height:1.55}
+  code{font-family:'JetBrains Mono',monospace;font-size:12px;color:#5fb878}
+  .tag{display:inline-block;background:#1a3322;color:#5fb878;
+    border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;
+    font-family:'JetBrains Mono',monospace;font-size:10px;
+    letter-spacing:.1em;margin-bottom:14px}
+</style></head>
+<body><div class="wrap">
+  <div class="tag">SHINY-MCP · IFRAME MOUNTED</div>
+  <h1>Hello from the shiny-mcp connector</h1>
+  <p>This iframe came from a <em>second</em> MCP server
+    (<code>{base}/shiny-mcp</code>), peer to the NAV AI workspace.</p>
+  <p>If you can read this, Claude mounted the iframe successfully and
+    the issue with <code>launch_shiny_dashboard</code> is in the rewritten
+    Shiny content, not the shiny-mcp dispatcher.</p>
+  <p style="color:#7a8087">Tool: <code>launch_shiny_hello</code> ·
+    Resource: <code>ui://shiny/hello</code></p>
+</div></body></html>
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -188,52 +251,92 @@ async def _dispatch_shiny_mcp(
         return JSONResponse(_result(req_id, {}))
 
     if method == "tools/list":
-        return JSONResponse(_result(req_id, {"tools": [SHINY_LAUNCH_TOOL]}))
+        return JSONResponse(
+            _result(req_id, {"tools": [SHINY_LAUNCH_TOOL, SHINY_HELLO_TOOL]})
+        )
 
     if method == "tools/call":
         name = params.get("name")
-        if name != "launch_shiny_dashboard":
-            return JSONResponse(_error(req_id, -32602, f"Unknown tool: {name}"))
+        if name == "launch_shiny_dashboard":
+            return JSONResponse(
+                _result(
+                    req_id,
+                    {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Opening the R Shiny pricing dashboard. "
+                                    "The host should mount it in its own iframe."
+                                ),
+                            }
+                        ]
+                    },
+                )
+            )
+        if name == "launch_shiny_hello":
+            return JSONResponse(
+                _result(
+                    req_id,
+                    {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Opening shiny-mcp hello-world iframe "
+                                    "(A/B test to verify mounting)."
+                                ),
+                            }
+                        ]
+                    },
+                )
+            )
+        return JSONResponse(_error(req_id, -32602, f"Unknown tool: {name}"))
+
+    if method == "resources/list":
         return JSONResponse(
             _result(
                 req_id,
-                {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Opening the R Shiny pricing dashboard. The host "
-                                "should mount it in its own iframe."
-                            ),
-                        }
-                    ]
-                },
+                {"resources": [SHINY_DASHBOARD_RESOURCE, SHINY_HELLO_RESOURCE]},
             )
         )
-
-    if method == "resources/list":
-        return JSONResponse(_result(req_id, {"resources": [SHINY_DASHBOARD_RESOURCE]}))
 
     if method == "resources/read":
         uri = params.get("uri")
-        if uri != SHINY_DASHBOARD_URI:
-            return JSONResponse(_error(req_id, -32602, f"Unknown resource: {uri}"))
-        html = await fetch_embedded_html()
-        return JSONResponse(
-            _result(
-                req_id,
-                {
-                    "contents": [
-                        {
-                            "uri": SHINY_DASHBOARD_URI,
-                            "mimeType": SHELL_MIME,
-                            "text": html,
-                            "_meta": SHINY_DASHBOARD_RESOURCE["_meta"],
-                        }
-                    ]
-                },
+        if uri == SHINY_DASHBOARD_URI:
+            html = await fetch_embedded_html()
+            return JSONResponse(
+                _result(
+                    req_id,
+                    {
+                        "contents": [
+                            {
+                                "uri": SHINY_DASHBOARD_URI,
+                                "mimeType": SHELL_MIME,
+                                "text": html,
+                                "_meta": SHINY_DASHBOARD_RESOURCE["_meta"],
+                            }
+                        ]
+                    },
+                )
             )
-        )
+        if uri == SHINY_HELLO_URI:
+            return JSONResponse(
+                _result(
+                    req_id,
+                    {
+                        "contents": [
+                            {
+                                "uri": SHINY_HELLO_URI,
+                                "mimeType": SHELL_MIME,
+                                "text": SHINY_HELLO_HTML.replace("{base}", BASE_URL),
+                                "_meta": SHINY_HELLO_RESOURCE["_meta"],
+                            }
+                        ]
+                    },
+                )
+            )
+        return JSONResponse(_error(req_id, -32602, f"Unknown resource: {uri}"))
 
     if is_notification:
         return Response(status_code=202)

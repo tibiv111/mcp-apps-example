@@ -20,29 +20,39 @@
   <!-- ─── Diagnosis banner ─────────────────────────────────────────────── -->
   <div class="receipt" style="border-color:var(--accent);margin-bottom:18px">
     <div class="row" style="border-bottom:1px solid var(--border)">
-      <span class="k" style="color:var(--accent)">Diagnosis (so far)</span>
+      <span class="k" style="color:var(--accent)">Empirical findings</span>
       <span class="v">
-        In Claude, the shell HTML renders under an opaque host origin, so
-        <code style="font-family:var(--font-mono);font-size:11px">'self'</code>
-        in <code style="font-family:var(--font-mono);font-size:11px">frame-src 'self'</code>
-        is <em>not</em> our service URL — every `&lt;iframe src=&gt;` from
-        inside the shell is blocked, even back to our own domain.
-        <strong style="color:var(--text-1)">Card D</strong> (URL-form
-        resource) the host rejects outright with
+        <strong style="color:var(--text-1)">A/B/C:</strong> host enforces
+        <code style="font-family:var(--font-mono);font-size:11px">frame-src 'self' blob: data:</code>
+        and a parent sandbox without
+        <code style="font-family:var(--font-mono);font-size:11px">allow-popups</code>;
+        the shell's origin isn't our service, so even same-origin tricks
+        fail.
+        <strong style="color:var(--text-1)">D:</strong> host rejects
+        URL-form resources outright —
         <em>Unsupported UI resource content format</em>.
-        <strong style="color:var(--text-1)">Card E</strong>'s srcdoc trick
-        slips past <code style="font-family:var(--font-mono);font-size:11px">frame-src</code>
-        and Shiny now renders, but the iframe's
-        <code style="font-family:var(--font-mono);font-size:11px">connect-src 'self' https://nav-ai-mock-mcp.onrender.com</code>
-        blocks the WebSocket to
-        <code style="font-family:var(--font-mono);font-size:11px">wss://…/shiny-proxy/websocket/</code>
-        (CSP3's https→wss scheme flex isn't honoured here), so reactive
-        outputs stay empty. The fix landed in the resource's
-        <code style="font-family:var(--font-mono);font-size:11px">connectDomains</code>:
-        the wss form is listed explicitly now.
-        <strong style="color:var(--text-1)">Card F</strong> takes the cleanest
-        architectural path: expose Shiny as a separate MCP server, let
-        Claude mount it as a peer iframe alongside this workspace.
+        <strong style="color:var(--text-1)">E:</strong> srcdoc slips past
+        <code style="font-family:var(--font-mono);font-size:11px">frame-src</code>
+        and Shiny renders inside the existing shell. Live data required
+        listing the <code style="font-family:var(--font-mono);font-size:11px">wss://</code>
+        form explicitly in <code style="font-family:var(--font-mono);font-size:11px">connectDomains</code>
+        (the <code style="font-family:var(--font-mono);font-size:11px">https://</code>
+        form alone doesn't permit WebSocket here).
+        <strong style="color:var(--text-1)">F:</strong> server-side
+        perfect — trace shows
+        <code style="font-family:var(--font-mono);font-size:11px">tools/call</code>
+        and <code style="font-family:var(--font-mono);font-size:11px">resources/read</code>
+        both return 200. Per the Claude docs the host <em>should</em> mount
+        a fresh iframe per tool call (multiple iframes coexisting per
+        session), but observationally the shiny-mcp resource isn't
+        mounting. An A/B test tool
+        (<code style="font-family:var(--font-mono);font-size:11px">launch_shiny_hello</code>)
+        with a trivial HTML body is wired in to isolate whether the issue
+        is the dispatcher or the embedded Shiny content.
+        <br/><br/>
+        <strong style="color:var(--text-1)">Bottom line:</strong> Card E
+        renders end-to-end in Claude today. D's MIME is rejected outright.
+        F is wire-correct but the iframe mount is under investigation.
       </span>
     </div>
   </div>
@@ -248,18 +258,31 @@
     <h3 style="margin:0 0 8px 0">Expose Shiny as its own MCP server, peer to NAV AI</h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ ARCHITECTURALLY CLEAN</span>
-      <span style="background:#33301a;color:#e8c66e;border:1px solid #5a4f2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">? NEEDS CLAUDE CONFIG CHANGE</span>
+      <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ SERVER WIRE PERFECT</span>
+      <span style="background:#33301a;color:#e8c66e;border:1px solid #5a4f2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">~ DEBUGGING WHY THE IFRAME ISN'T MOUNTING</span>
     </div>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
-      Instead of trying to mount Shiny inside this NAV AI shell, expose it
-      as a dedicated MCP server endpoint at
+      Idea: expose Shiny as a dedicated MCP server endpoint at
       <code style="font-family:var(--font-mono);color:var(--accent);font-size:11px">/shiny-mcp</code>.
-      The user adds this URL as a <em>second</em> MCP server in Claude — each
-      MCP server gets its own iframe slot, so the Shiny dashboard mounts
-      as a peer of the NAV AI workspace rather than fighting for the same
-      surface. The path rewriter + WS shim still do their work inside that
-      iframe's resource, but the srcdoc trick from Card E isn't needed:
-      Claude mounts the second server's resource as a fresh iframe naturally.
+      Per the Claude docs, the host mounts a <em>fresh iframe per MCP App
+      tool call</em>, with multiple iframes coexisting in one session — so
+      a peer iframe should appear at the assistant turn that ran
+      <code style="font-family:var(--font-mono);font-size:11px">launch_shiny_dashboard</code>.
+      The server-side wire is perfect (<code style="font-family:var(--font-mono);font-size:11px">/diagnostics</code> shows
+      <code style="font-family:var(--font-mono);font-size:11px">tools/call</code> +
+      <code style="font-family:var(--font-mono);font-size:11px">resources/read</code> both 200), but the iframe doesn't
+      appear in the chat transcript.
+    </p>
+    <p style="margin:0 0 12px 0;color:var(--text-3);font-size:12px;background:#0d0d10;border:1px solid var(--border);border-radius:4px;padding:8px 10px">
+      <strong style="color:var(--text-1)">A/B test to isolate the issue:</strong>
+      shiny-mcp now exposes a second tool,
+      <code style="font-family:var(--font-mono);font-size:11px">launch_shiny_hello</code>, whose resource is a trivial
+      &quot;hello world&quot; HTML body (no Shiny, no path rewriting, no shim).
+      Ask Claude <em>&quot;open the shiny hello world&quot;</em> via the shiny
+      connector. If the hello iframe mounts: the bug is in the embedded Shiny
+      content (we need to fix the rewrite / shim). If neither hello nor
+      dashboard mount: the bug is in the shiny-mcp dispatcher (tool/resource
+      shape, capabilities, or some required field we're missing).
     </p>
 
     <div class="receipt" style="margin-bottom:12px">
@@ -268,12 +291,12 @@
         <span class="v" style="font-family:var(--font-mono);color:var(--accent)" id="shiny-mcp-url">{{ base_url }}/shiny-mcp</span>
       </div>
       <div class="row">
-        <span class="k">Tool</span>
-        <span class="v" style="font-family:var(--font-mono)">launch_shiny_dashboard</span>
+        <span class="k">Tools</span>
+        <span class="v" style="font-family:var(--font-mono)">launch_shiny_dashboard · launch_shiny_hello</span>
       </div>
       <div class="row">
-        <span class="k">Resource</span>
-        <span class="v" style="font-family:var(--font-mono)">ui://shiny/dashboard</span>
+        <span class="k">Resources</span>
+        <span class="v" style="font-family:var(--font-mono)">ui://shiny/dashboard · ui://shiny/hello</span>
       </div>
       <div class="row">
         <span class="k">MIME</span>
@@ -286,13 +309,14 @@
     </p>
     <ol style="margin:0 0 12px 0;padding-left:20px;color:var(--text-2);font-size:13px;line-height:1.6">
       <li>Add <code style="font-family:var(--font-mono);color:var(--accent);font-size:11px">{{ base_url }}/shiny-mcp</code> as a connector in Claude (separate from the existing NAV AI server).</li>
-      <li>In chat, ask Claude: <em>"open the Shiny dashboard"</em>. Claude should invoke <code style="font-family:var(--font-mono);font-size:11px">launch_shiny_dashboard</code> on the new server.</li>
-      <li>The Shiny dashboard mounts in its own iframe — independent of this NAV AI workspace. Both stay live; both are addressable from the same chat.</li>
+      <li>In chat, ask Claude: <em>"open the shiny hello world"</em>. If an iframe appears at that turn, mounting works → the issue is in the dashboard's embedded content.</li>
+      <li>Then ask: <em>"open the Shiny dashboard"</em>. If hello mounted but dashboard didn't, the rewrite/shim is the suspect; if neither mounted, the dispatcher needs investigation.</li>
     </ol>
 
     <div class="actions">
       <button class="primary" type="button" onclick="copyShinyMcpUrl()">Copy server URL</button>
-      <button class="ghost" type="button" onclick="askClaudeOpenShiny()">Ask Claude in chat ↗</button>
+      <button class="ghost" type="button" onclick="askClaudeOpenShinyHello()">Ask Claude: open hello ↗</button>
+      <button class="ghost" type="button" onclick="askClaudeOpenShiny()">Ask Claude: open dashboard ↗</button>
       <span style="color:var(--text-3);font-size:11px;font-family:var(--font-mono);margin-left:8px" id="shiny-mcp-copy-status"></span>
     </div>
 
@@ -321,6 +345,13 @@
     async function askClaudeOpenShiny() {
       try {
         await window.sendChatPrompt('Open the Shiny dashboard via the shiny-mcp MCP server.');
+      } catch (e) {
+        alert('Host did not accept the message: ' + ((e && e.message) || e));
+      }
+    }
+    async function askClaudeOpenShinyHello() {
+      try {
+        await window.sendChatPrompt('Open the shiny hello world via the shiny-mcp MCP server (launch_shiny_hello).');
       } catch (e) {
         alert('Host did not accept the message: ' + ((e && e.message) || e));
       }

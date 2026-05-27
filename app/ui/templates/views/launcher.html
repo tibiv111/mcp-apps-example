@@ -30,7 +30,7 @@
     <div class="card">
       <div class="tag">05 · EXPERIMENT</div>
       <h3>R Shiny — integration options</h3>
-      <p>Six attempts to mount Shiny in an MCP App, each with the actual error or workaround documented. A–C are blocked by the host iframe sandbox; D is rejected as unsupported MIME; E renders but the data-WebSocket gets blocked by connect-src; F is the architecturally clean path — Shiny as its own MCP server.</p>
+      <p>Six attempts to mount Shiny in an MCP App, each with the actual error or workaround documented. A–C are blocked by the host iframe sandbox; D rejected as unsupported MIME; E renders inline-HTML via srcdoc (works); F exposes Shiny as a separate MCP server (wire-correct, iframe mount under investigation with an A/B test).</p>
       <button class="primary" onclick="show('shiny')">Compare options →</button>
     </div>
   </div>

@@ -105,37 +105,93 @@ def _absolute_proxy_ws() -> str:
     return ws + PROXY_PREFIX + "/websocket/"
 
 
+_URL_ATTR_RE = re.compile(
+    rb'(\s(?:src|href|action))=(["\'])([^"\']*)\2',
+    re.IGNORECASE,
+)
+_CSS_URL_RE = re.compile(rb'url\(([\'"]?)([^\'")\s]+)\1\)', re.IGNORECASE)
+_ABSOLUTE_SCHEME = (
+    b"http://",
+    b"https://",
+    b"//",
+    b"data:",
+    b"javascript:",
+    b"mailto:",
+    b"#",
+    b"about:",
+)
+
+
 def _rewrite_for_inline_embed(body: bytes, proxy_base_abs: str) -> bytes:
     """
-    Like `_rewrite_html_paths` but rewrites Shiny's absolute paths to
-    *absolute* URLs through BASE_URL. Required for inline-HTML MCP
-    resources because the iframe's `location` is opaque, so a path-only
-    prefix like `/shiny-proxy/...` doesn't resolve to anything sensible.
+    Rewrite every relative URL in Shiny's HTML to an absolute URL
+    through the proxy.
+
+    Why this is more aggressive than `_rewrite_html_paths`:
+      - Inline-HTML MCP resources end up rendered in a srcdoc iframe.
+      - The host enforces `base-uri 'self'`, so a `<base href>` pointing
+        at our origin is blocked — there's no shorthand for fixing
+        relative paths.
+      - The srcdoc iframe's base URL falls back to the parent shell's
+        URL (the host's content origin), so relative paths resolve to
+        the host, not to us.
+
+    Handles both `href="/foo"` (absolute-path) and `href="foo"`
+    (relative) for src/href/action; same shape for CSS `url()`.
+    Leaves fully-qualified, fragment, data:, javascript:, mailto:, and
+    about: URLs alone.
     """
-    pb = proxy_base_abs.rstrip("/").encode()
-    return (
-        body.replace(b'href="/', b'href="' + pb + b"/")
-        .replace(b'src="/', b'src="' + pb + b"/")
-        .replace(b'action="/', b'action="' + pb + b"/")
-        .replace(b"url(/", b"url(" + pb + b"/")
-    )
+    pb_slash = (proxy_base_abs.rstrip("/") + "/").encode()  # ends with /
+    pb_no_slash = proxy_base_abs.rstrip("/").encode()       # no trailing /
+
+    def _rewrite(url: bytes) -> bytes:
+        if not url or url.startswith(_ABSOLUTE_SCHEME):
+            return url
+        if url.startswith(b"/"):
+            return pb_no_slash + url
+        return pb_slash + url
+
+    def replace_attr(m: "re.Match[bytes]") -> bytes:
+        attr, quote, url = m.group(1), m.group(2), m.group(3)
+        return attr + b"=" + quote + _rewrite(url) + quote
+
+    def replace_css(m: "re.Match[bytes]") -> bytes:
+        quote, url = m.group(1), m.group(2)
+        return b"url(" + quote + _rewrite(url) + quote + b")"
+
+    body = _URL_ATTR_RE.sub(replace_attr, body)
+    body = _CSS_URL_RE.sub(replace_css, body)
+    return body
 
 
 def _build_inline_shim(proxy_base_abs: str, proxy_ws_abs: str) -> str:
     """
-    The JS+HTML head insertion that adapts Shiny for an inline-HTML MCP
-    iframe whose `location.host` is empty:
-      - <base href="..."> anchors relative URLs against the proxy.
-      - WebSocket constructor is monkey-patched to force the WS proxy URL,
-        because Shiny's own URL builder uses `location.host`.
-      - The shim runs synchronously before Shiny's own scripts execute.
+    Pre-Shiny JS shim. Adapts the runtime for a srcdoc iframe whose
+    base URL is the parent shell's origin (not ours):
+      - WebSocket constructor → force the proxy WS URL. Shiny's URL
+        builder uses location.host, which is empty/host-origin here.
+      - fetch + XMLHttpRequest → rewrite relative/absolute-path URLs
+        through the proxy. Shiny generates session URLs at runtime
+        (`session/<id>/...`, `_w_xxx/...`, etc.) that don't appear in
+        the initial HTML, so HTML rewriting can't catch them.
+      - <base href> is intentionally omitted: the host enforces
+        `base-uri 'self'` and rejects any non-self base URL.
     """
     return (
-        f'<base href="{proxy_base_abs}">'
         "<script>(function(){"
+        f'var PROXY_BASE="{proxy_base_abs.rstrip("/")}/";'
+        'var PROXY_NO_SLASH=PROXY_BASE.replace(/\\/+$/,"");'
+        "function rewriteUrl(u){"
+        'if(!u||typeof u!=="string")return u;'
+        'if(/^[a-zA-Z][a-zA-Z0-9+.\\-]*:/.test(u))return u;'
+        'if(u.indexOf("//")===0)return u;'
+        'if(u.charAt(0)==="#")return u;'
+        'if(u.charAt(0)==="/")return PROXY_NO_SLASH+u;'
+        "return PROXY_BASE+u;"
+        "}"
         "var OriginalWS=window.WebSocket;"
-        "function PatchedWS(_url, protocols){"
-        f'return new OriginalWS("{proxy_ws_abs}", protocols);'
+        "function PatchedWS(_url,protocols){"
+        f'return new OriginalWS("{proxy_ws_abs}",protocols);'
         "}"
         "PatchedWS.CONNECTING=OriginalWS.CONNECTING;"
         "PatchedWS.OPEN=OriginalWS.OPEN;"
@@ -143,6 +199,23 @@ def _build_inline_shim(proxy_base_abs: str, proxy_ws_abs: str) -> str:
         "PatchedWS.CLOSED=OriginalWS.CLOSED;"
         "PatchedWS.prototype=OriginalWS.prototype;"
         "window.WebSocket=PatchedWS;"
+        "if(window.fetch){"
+        "var origFetch=window.fetch;"
+        "window.fetch=function(input,init){"
+        'if(typeof input==="string"){input=rewriteUrl(input);}'
+        'else if(input&&typeof Request!=="undefined"&&input instanceof Request){'
+        "try{input=new Request(rewriteUrl(input.url),input);}catch(e){}"
+        "}"
+        "return origFetch.call(window,input,init);"
+        "};"
+        "}"
+        "if(window.XMLHttpRequest&&XMLHttpRequest.prototype){"
+        "var origOpen=XMLHttpRequest.prototype.open;"
+        "XMLHttpRequest.prototype.open=function(method,url){"
+        "arguments[1]=rewriteUrl(url);"
+        "return origOpen.apply(this,arguments);"
+        "};"
+        "}"
         "})();</script>"
     )
 

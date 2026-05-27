@@ -62,28 +62,50 @@ Calling **Call launch_shiny_embedded ↗** in the Shiny tab issues a real
 `resources/read ui://nav-ai/shiny-embedded`, and the server:
 
 1. Fetches Shiny's root HTML from the standalone Shiny service.
-2. Rewrites every absolute path (`href="/…"`, `src="/…"`, etc.) to
-   absolute URLs through `<BASE_URL>/shiny-proxy/`, so the iframe's
-   script-src / style-src (governed by the resource's `resourceDomains`
-   hint) sees a known origin.
-3. Injects a `<base href>` tag so relative URLs resolve the same way.
-4. Injects a small JS shim that monkey-patches `window.WebSocket` to
-   force every connection at `<BASE_URL>/shiny-proxy/websocket/`. This
-   is necessary because Shiny's client computes its WS URL from
-   `location.host`, which is empty in an inline-HTML iframe.
+2. **Rewrites every URL** (absolute-path *and* relative) in `src=`,
+   `href=`, `action=`, and CSS `url(...)` references to absolute URLs
+   through `<BASE_URL>/shiny-proxy/`. Relative paths like
+   `jquery-3.6.0/jquery.min.js` are common in Shiny's output and
+   would otherwise resolve against the parent shell's origin.
+3. Injects a JS shim that runs before any of Shiny's scripts:
+   - Monkey-patches `window.WebSocket` to force every connection at
+     `<BASE_URL>/shiny-proxy/websocket/`. Shiny's URL builder uses
+     `location.host` which is empty in a srcdoc iframe.
+   - Wraps `window.fetch` and `XMLHttpRequest.prototype.open` to
+     rewrite URLs at request time, catching the session-relative
+     URLs Shiny generates at runtime.
 
 The returned resource has `mimeType: text/html;profile=mcp-app` — the
 same as the NAV AI shell. **Empirically, today's Claude accepts the
 fetch but doesn't mount it as a second iframe** (the shell is already
 mounted; there's no host convention for "open this new UI resource
 alongside the existing one"). To still make the demo visible, the
-shell-side handler takes the same HTML that came back from
-`resources/read` and assigns it to the existing
+shell-side handler assigns the resource body to the existing
 `<iframe id="shiny-embed-iframe">`'s `srcdoc` attribute. `srcdoc`
 isn't a navigation, so the host's `frame-src 'self'` doesn't gate it
 the way `src=` is gated. The iframe renders the embedded HTML in
-place, Shiny's JS runs inside it, and the WS shim points its socket
-at our proxy. The visible "Shiny inside Claude" demo lives here.
+place, Shiny's JS runs inside it, and the shim plus path rewriting
+route every asset, WS, and XHR back through our proxy. The visible
+"Shiny inside Claude" demo lives here.
+
+### Empirical CSP findings (Card E iteration)
+
+A first attempt at Card E used `<base href>` to anchor Shiny's relative
+URLs. The host's CSP also enforces `base-uri 'self'`, which rejects any
+`<base>` outside the parent's origin:
+
+```text
+Setting the document's base URI to 'https://.../shiny-proxy/' violates
+the following Content Security Policy directive: "base-uri 'self'".
+The action has been blocked.
+```
+
+Without `<base>`, relative paths in the srcdoc iframe resolve to the
+host's content origin (`*.claudemcpcontent.com`), which 404s with
+`text/plain` MIME (and Chrome's strict MIME checking then refuses to
+execute the 404 body as JS). The fix is to never rely on `<base>` —
+rewrite every URL to an absolute form server-side, plus intercept
+fetch/XHR at runtime for URLs Shiny generates dynamically.
 
 ### What Card D actually does
 

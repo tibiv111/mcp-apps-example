@@ -14,6 +14,7 @@ from .config import (
     BASE_URL,
     SHELL_MIME,
     SHELL_URI,
+    SHINY_EMBED_URI,
     SHINY_RESOURCE_MIME,
     SHINY_URI,
     SHINY_URL,
@@ -54,6 +55,24 @@ TOOLS: list[dict[str, Any]] = [
         # alongside the tool result. Mirrors the launch_nav_ai pattern, but
         # the referenced resource is URL-form rather than inline HTML.
         "_meta": {"ui": {"resourceUri": SHINY_URI}},
+    },
+    {
+        "name": "launch_shiny_embedded",
+        "title": "Open Shiny (server-side embed)",
+        "description": (
+            "Server-side embed of the Shiny dashboard as an inline-HTML MCP "
+            "resource. The server fetches Shiny's HTML, rewrites every "
+            "asset path through our reverse proxy, and patches the "
+            "WebSocket constructor so it points back at the proxy. Same "
+            "rendering path as the existing NAV AI shell — Card E in the "
+            "Shiny launcher tab."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "_meta": {"ui": {"resourceUri": SHINY_EMBED_URI}},
     },
     {
         "name": "submit_pricing_change",
@@ -269,6 +288,26 @@ RESOURCES: list[dict[str, Any]] = [
                 "externalUrl": SHINY_URL,
                 "csp": {
                     "frameDomains": [SHINY_URL],
+                },
+                "prefersBorder": True,
+            }
+        },
+    },
+    {
+        # Card E: inline-HTML MCP resource whose body is Shiny's own HTML,
+        # fetched + rewritten server-side. Same rendering path as the NAV
+        # AI shell, so today's Claude actually renders it. CSP hints must
+        # allow connect/script/style back to BASE_URL because every
+        # rewritten asset URL and the patched WebSocket point there.
+        "uri": SHINY_EMBED_URI,
+        "name": "NAV AI — R Shiny (server-side embed)",
+        "description": "R Shiny dashboard embedded via server-side HTML rewrite + WS shim.",
+        "mimeType": SHELL_MIME,
+        "_meta": {
+            "ui": {
+                "csp": {
+                    "connectDomains": [BASE_URL],
+                    "resourceDomains": [BASE_URL],
                 },
                 "prefersBorder": True,
             }

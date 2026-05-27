@@ -30,14 +30,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import httpx
 import websockets
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .config import SHINY_URL
+from .config import BASE_URL, SHINY_URL
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +82,130 @@ def _rewrite_html_paths(body: bytes) -> bytes:
         .replace(b'action="/', b'action="' + prefix + b"/")
         .replace(b"url(/", b"url(" + prefix + b"/")
     )
+
+
+# ---------------------------------------------------------------------------
+# Card E: Server-side embed of Shiny as inline-HTML MCP resource.
+# ---------------------------------------------------------------------------
+
+def _absolute_proxy_base() -> str:
+    """The absolute URL form of the /shiny-proxy/ root, with trailing slash."""
+    return BASE_URL.rstrip("/") + PROXY_PREFIX + "/"
+
+
+def _absolute_proxy_ws() -> str:
+    """Absolute ws(s):// URL of the /shiny-proxy/websocket/ endpoint."""
+    base = BASE_URL.rstrip("/")
+    if base.startswith("https://"):
+        ws = "wss://" + base[len("https://") :]
+    elif base.startswith("http://"):
+        ws = "ws://" + base[len("http://") :]
+    else:
+        ws = base
+    return ws + PROXY_PREFIX + "/websocket/"
+
+
+def _rewrite_for_inline_embed(body: bytes, proxy_base_abs: str) -> bytes:
+    """
+    Like `_rewrite_html_paths` but rewrites Shiny's absolute paths to
+    *absolute* URLs through BASE_URL. Required for inline-HTML MCP
+    resources because the iframe's `location` is opaque, so a path-only
+    prefix like `/shiny-proxy/...` doesn't resolve to anything sensible.
+    """
+    pb = proxy_base_abs.rstrip("/").encode()
+    return (
+        body.replace(b'href="/', b'href="' + pb + b"/")
+        .replace(b'src="/', b'src="' + pb + b"/")
+        .replace(b'action="/', b'action="' + pb + b"/")
+        .replace(b"url(/", b"url(" + pb + b"/")
+    )
+
+
+def _build_inline_shim(proxy_base_abs: str, proxy_ws_abs: str) -> str:
+    """
+    The JS+HTML head insertion that adapts Shiny for an inline-HTML MCP
+    iframe whose `location.host` is empty:
+      - <base href="..."> anchors relative URLs against the proxy.
+      - WebSocket constructor is monkey-patched to force the WS proxy URL,
+        because Shiny's own URL builder uses `location.host`.
+      - The shim runs synchronously before Shiny's own scripts execute.
+    """
+    return (
+        f'<base href="{proxy_base_abs}">'
+        "<script>(function(){"
+        "var OriginalWS=window.WebSocket;"
+        "function PatchedWS(_url, protocols){"
+        f'return new OriginalWS("{proxy_ws_abs}", protocols);'
+        "}"
+        "PatchedWS.CONNECTING=OriginalWS.CONNECTING;"
+        "PatchedWS.OPEN=OriginalWS.OPEN;"
+        "PatchedWS.CLOSING=OriginalWS.CLOSING;"
+        "PatchedWS.CLOSED=OriginalWS.CLOSED;"
+        "PatchedWS.prototype=OriginalWS.prototype;"
+        "window.WebSocket=PatchedWS;"
+        "})();</script>"
+    )
+
+
+_HEAD_OPEN = re.compile(rb"<head\b[^>]*>", re.IGNORECASE)
+
+
+async def fetch_embedded_html() -> str:
+    """
+    Fetch Shiny's root HTML and adapt it for embedding inside an inline-
+    HTML MCP resource. Returns the adapted HTML as a string.
+
+    Failure mode: if Shiny is unreachable (cold-start, network), returns
+    a small fallback HTML page that explains the situation rather than
+    raising. The fallback still renders inside Claude — it's just not
+    Shiny.
+    """
+    proxy_base_abs = _absolute_proxy_base()
+    proxy_ws_abs = _absolute_proxy_ws()
+    upstream_url = SHINY_URL.rstrip("/") + "/"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(upstream_url)
+            resp.raise_for_status()
+            body = resp.content
+    except Exception as e:  # noqa: BLE001
+        log.warning("shiny embed fetch failed: %s", e)
+        return _fallback_embed_html(str(e))
+
+    body = _rewrite_for_inline_embed(body, proxy_base_abs)
+    shim = _build_inline_shim(proxy_base_abs, proxy_ws_abs).encode()
+    body = _HEAD_OPEN.sub(lambda m: m.group(0) + shim, body, count=1)
+
+    return body.decode("utf-8", errors="replace")
+
+
+def _fallback_embed_html(error: str) -> str:
+    return (
+        "<!doctype html>"
+        '<html><head><meta charset="utf-8"><title>Shiny unavailable</title>'
+        '<style>body{background:#0d0d10;color:#e6e6ea;font-family:system-ui,sans-serif;'
+        "padding:24px;margin:0}h1{font-size:14px;letter-spacing:.16em;color:#7a8087;"
+        "text-transform:uppercase;margin:0 0 12px 0}p{font-size:13px;color:#9aa0aa;margin:0 0 8px 0}"
+        "code{font-family:JetBrains Mono,monospace;font-size:12px;color:#e8746e}</style></head>"
+        "<body><h1>Shiny embed unavailable</h1>"
+        f"<p>Server tried to fetch Shiny but the upstream failed: <code>{error}</code></p>"
+        '<p>On Render free tier this is usually a cold-start; retry in 30–60s. If it persists, '
+        "check the Shiny service logs and the <code>SHINY_URL</code> env var.</p>"
+        "</body></html>"
+    )
+
+
+@router.get("/shiny-embed.html", response_class=HTMLResponse)
+async def shiny_embed_html() -> HTMLResponse:
+    """
+    Browser-side fetch target for Card E's preview iframe. Returns the
+    same HTML the MCP resource serves, so a developer can visit
+    `/shiny-embed.html` directly in a browser to debug the rewrite/shim
+    independently of the MCP plumbing.
+    """
+    html = await fetch_embedded_html()
+    return HTMLResponse(html)
 
 
 # ---------------------------------------------------------------------------

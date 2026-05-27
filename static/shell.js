@@ -496,6 +496,38 @@
     }
   };
 
+  // ── Card E: live launch_shiny_embedded call (inline-HTML MCP resource) ──
+  // The server-side embed path. Tool returns a text/html;profile=mcp-app
+  // body with Shiny's HTML rewritten + WebSocket shim injected. Same
+  // MIME as the NAV AI shell, so today's Claude actually renders it.
+  window.launchShinyEmbedded = async function(){
+    const btn = document.getElementById('launch-shiny-embedded-btn');
+    const box = document.getElementById('launch-shiny-embedded-result');
+    if (!btn || !box) return;
+    btn.disabled = true; btn.textContent = 'Calling launch_shiny_embedded…';
+    box.classList.add('hidden');
+    try {
+      await sendRequest('tools/call', { name: 'launch_shiny_embedded', arguments: {} });
+      const resRead = await sendRequest('resources/read', { uri: 'ui://nav-ai/shiny-embedded' });
+      const first = ((resRead && resRead.contents) || [])[0] || {};
+      document.getElementById('lse-uri').textContent  = first.uri || '—';
+      document.getElementById('lse-mime').textContent = first.mimeType || '—';
+      document.getElementById('lse-len').textContent  = (first.text || '').length.toLocaleString() + ' chars';
+      document.getElementById('lse-action').textContent =
+        'host should mount this inline HTML in its own iframe — check above the chat for a new Shiny workspace';
+      box.classList.remove('hidden');
+      btn.textContent = '✓ called launch_shiny_embedded';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Call launch_shiny_embedded ↗'; }, 2400);
+    } catch (e) {
+      document.getElementById('lse-uri').textContent  = '—';
+      document.getElementById('lse-mime').textContent = '—';
+      document.getElementById('lse-len').textContent  = '—';
+      document.getElementById('lse-action').textContent = (e && e.message) || String(e);
+      box.classList.remove('hidden');
+      btn.disabled = false; btn.textContent = 'Call launch_shiny_embedded ↗';
+    }
+  };
+
   // ── Card D: live launch_shiny call (URL-form MCP resource) ──
   // Calls tools/call launch_shiny, then fetches the referenced resource
   // via resources/read so we can show the URL-form payload + see whether

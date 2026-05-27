@@ -51,6 +51,15 @@ SHELL_MIME: str = "text/html;profile=mcp-app"  # exact, no space after ';'
 SHINY_URI: str = "ui://nav-ai/shiny"
 SHINY_RESOURCE_MIME: str = "text/uri-list;profile=mcp-app"
 
+# Card E in the Shiny launcher tab: an inline-HTML MCP resource where the
+# body is Shiny's *own* HTML fetched server-side, with paths rewritten to
+# go through our reverse proxy and a WebSocket-constructor shim injected
+# so Shiny's client-side JS doesn't try to compute a WS URL from the
+# empty `location.host` of an inline-HTML iframe. This is the only path
+# that's expected to render Shiny inside today's Claude — same MIME and
+# rendering path as the existing NAV AI shell.
+SHINY_EMBED_URI: str = "ui://nav-ai/shiny-embedded"
+
 # --- Demo values -------------------------------------------------------------
 
 DEMO_USER: str = "demo-user@nav-ai.local"

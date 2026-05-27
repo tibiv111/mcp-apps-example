@@ -28,10 +28,12 @@ from ..config import (
     SERVER_VERSION,
     SHELL_MIME,
     SHELL_URI,
+    SHINY_EMBED_URI,
     SHINY_RESOURCE_MIME,
     SHINY_URI,
     SHINY_URL,
 )
+from ..shiny_proxy import fetch_embedded_html
 from ..schemas import RESOURCES, TOOLS
 from ..ui.render import render_shell_html
 from .tools import TOOL_HANDLERS
@@ -336,6 +338,27 @@ async def _dispatch(
                                 "mimeType": SHINY_RESOURCE_MIME,
                                 "text": SHINY_URL + "\n",
                                 "_meta": shiny_resource["_meta"],
+                            }
+                        ]
+                    },
+                )
+            )
+        if uri == SHINY_EMBED_URI:
+            # Card E: server-side embed. Fetch Shiny's HTML, rewrite it,
+            # inject the WS shim, return as inline HTML — same MIME as the
+            # NAV AI shell so the host renders it identically.
+            embed_resource = next(r for r in RESOURCES if r["uri"] == SHINY_EMBED_URI)
+            html = await fetch_embedded_html()
+            return JSONResponse(
+                _result(
+                    req_id,
+                    {
+                        "contents": [
+                            {
+                                "uri": SHINY_EMBED_URI,
+                                "mimeType": SHELL_MIME,
+                                "text": html,
+                                "_meta": embed_resource["_meta"],
                             }
                         ]
                     },

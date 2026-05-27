@@ -25,6 +25,26 @@ from .. import pricing, state
 from ..jobs import runner as jobs_runner
 
 
+async def launch_shiny_embedded(_args: dict[str, Any], _token: str | None) -> dict[str, Any]:
+    """
+    Card E. The host learns the resource URI from `_meta.ui.resourceUri`
+    on this tool and follows up with a `resources/read` for
+    `ui://nav-ai/shiny-embedded`, which returns Shiny's HTML inline.
+    """
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "Opening Shiny via server-side embed (inline-HTML MCP "
+                    "resource). The host should render it the same way as "
+                    "the existing NAV AI workspace shell."
+                ),
+            }
+        ]
+    }
+
+
 async def launch_shiny(_args: dict[str, Any], _token: str | None) -> dict[str, Any]:
     """
     Card D in the Shiny launcher tab. The host already learned the resource
@@ -387,6 +407,7 @@ ToolHandler = Callable[[dict[str, Any], str | None], Awaitable[dict[str, Any]]]
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "launch_nav_ai": launch_nav_ai,
     "launch_shiny": launch_shiny,
+    "launch_shiny_embedded": launch_shiny_embedded,
     "submit_pricing_change": submit_pricing_change,
     "start_forecast": start_forecast,
     "lookup_product": lookup_product,

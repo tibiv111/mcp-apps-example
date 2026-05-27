@@ -17,6 +17,7 @@ forecast, catalog) are untouched.
 | B | Open in a new tab via `window.open(SHINY_URL)` | Blocked: `Blocked opening … in a sandboxed frame whose 'allow-popups' permission is not set` | Works | Five lines |
 | C | Same-origin reverse proxy at `/shiny-proxy/*` | Still blocked: shell document is loaded under the host's opaque origin, so even our own service URL is cross-origin from inside the shell | Works | ~120 LOC: HTTP forwarding + HTML path rewriting + WebSocket pump. See [app/shiny_proxy.py](../app/shiny_proxy.py). |
 | D | URL-form MCP resource via `launch_shiny` tool | Depends on whether the host renders URL-form resources. Today Claude appears to ignore them | n/a | Implemented: new `launch_shiny` tool + `ui://nav-ai/shiny` URL-list resource. See [app/schemas.py](../app/schemas.py), [app/mcp/tools.py](../app/mcp/tools.py), [app/mcp/router.py](../app/mcp/router.py). |
+| E | Server-side embed as inline-HTML MCP resource via `launch_shiny_embedded` tool | Expected to render — same MIME and rendering path as the existing NAV AI shell | Works | Implemented: ~80 LOC of HTML rewrite + WebSocket-constructor shim in `fetch_embedded_html`. See [app/shiny_proxy.py](../app/shiny_proxy.py) and the `ui://nav-ai/shiny-embedded` resource in [app/schemas.py](../app/schemas.py). |
 
 ### Why each one exists
 
@@ -24,10 +25,17 @@ forecast, catalog) are untouched.
   everyone starts.
 - **B** is the "stop fighting the sandbox" answer.
 - **C** is what you reach for when the in-canvas experience is
-  non-negotiable. It costs you a bidirectional WebSocket proxy and
-  HTML rewriting because `shiny::runApp` emits absolute paths like
-  `/shared/shiny.min.js`.
+  non-negotiable but you control where the shell loads from. Costs a
+  bidirectional WebSocket proxy and HTML rewriting because
+  `shiny::runApp` emits absolute paths like `/shared/shiny.min.js`.
 - **D** is the spec-clean answer, deferred to the host.
+- **E** is what's left when you need Shiny to render *today* inside
+  Claude: don't iframe Shiny — serve Shiny's HTML *as* the MCP resource
+  body. The shell's CSP allows the host's iframe to load scripts/styles
+  and open WebSockets to our origin (the `connectDomains` /
+  `resourceDomains` hints make that explicit), so once paths are
+  rewritten and the WS URL is shimmed, Shiny runs inside the
+  inline-HTML iframe just like the existing shell.
 
 ### Empirical CSP findings
 
@@ -46,6 +54,29 @@ There's a speculative hint at [app/schemas.py](../app/schemas.py)
 `resourceDomains` keys. If a future Claude build honours it, Cards A and
 C would unblock without any client-side changes; today it appears to be
 silently ignored.
+
+### What Card E actually does
+
+Calling **Call launch_shiny_embedded ↗** in the Shiny tab issues a real
+`tools/call launch_shiny_embedded`. The host follows up with
+`resources/read ui://nav-ai/shiny-embedded`, and the server:
+
+1. Fetches Shiny's root HTML from the standalone Shiny service.
+2. Rewrites every absolute path (`href="/…"`, `src="/…"`, etc.) to
+   absolute URLs through `<BASE_URL>/shiny-proxy/`, so the iframe's
+   script-src / style-src (governed by the resource's `resourceDomains`
+   hint) sees a known origin.
+3. Injects a `<base href>` tag so relative URLs resolve the same way.
+4. Injects a small JS shim that monkey-patches `window.WebSocket` to
+   force every connection at `<BASE_URL>/shiny-proxy/websocket/`. This
+   is necessary because Shiny's client computes its WS URL from
+   `location.host`, which is empty in an inline-HTML iframe.
+
+The returned resource has `mimeType: text/html;profile=mcp-app` — the
+same as the NAV AI shell. The host should mount it the same way it
+mounts the workspace: a new iframe rendered alongside the chat. Inside
+that iframe, Shiny's JS runs, connects to our WebSocket proxy, and the
+dashboard appears.
 
 ### What Card D actually does
 

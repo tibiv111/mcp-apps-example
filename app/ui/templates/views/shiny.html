@@ -39,16 +39,15 @@
         (the <code style="font-family:var(--font-mono);font-size:11px">https://</code>
         form alone doesn't permit WebSocket here).
         <strong style="color:var(--text-1)">F:</strong> server-side
-        perfect — trace shows
-        <code style="font-family:var(--font-mono);font-size:11px">tools/call</code>
-        and <code style="font-family:var(--font-mono);font-size:11px">resources/read</code>
-        both return 200. Per the Claude docs the host <em>should</em> mount
-        a fresh iframe per tool call (multiple iframes coexisting per
-        session), but observationally the shiny-mcp resource isn't
-        mounting. An A/B test tool
-        (<code style="font-family:var(--font-mono);font-size:11px">launch_shiny_hello</code>)
-        with a trivial HTML body is wired in to isolate whether the issue
-        is the dispatcher or the embedded Shiny content.
+        perfect, and the host <em>does</em> mount the iframe per the spec,
+        but kept it invisible. Root cause: the host gates visibility on
+        <code style="font-family:var(--font-mono);font-size:11px">ui/notifications/initialized</code>
+        from inside the iframe (the existing NAV AI shell does this via
+        <code style="font-family:var(--font-mono);font-size:11px">shell.js</code>).
+        Our hello-world had no JS and the Shiny embed had no MCP-aware JS,
+        so the handshake never fired — iframe mounted but never revealed.
+        Fix: minimal MCP App handshake JS is now inlined into both
+        shiny-mcp resources.
         <br/><br/>
         <strong style="color:var(--text-1)">Bottom line:</strong> Card E
         renders end-to-end in Claude today. D's MIME is rejected outright.
@@ -259,7 +258,7 @@
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ ARCHITECTURALLY CLEAN</span>
       <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ SERVER WIRE PERFECT</span>
-      <span style="background:#33301a;color:#e8c66e;border:1px solid #5a4f2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">~ DEBUGGING WHY THE IFRAME ISN'T MOUNTING</span>
+      <span style="background:#33301a;color:#e8c66e;border:1px solid #5a4f2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">~ HANDSHAKE FIX REDEPLOYING</span>
     </div>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
       Idea: expose Shiny as a dedicated MCP server endpoint at
@@ -274,15 +273,19 @@
       appear in the chat transcript.
     </p>
     <p style="margin:0 0 12px 0;color:var(--text-3);font-size:12px;background:#0d0d10;border:1px solid var(--border);border-radius:4px;padding:8px 10px">
-      <strong style="color:var(--text-1)">A/B test to isolate the issue:</strong>
-      shiny-mcp now exposes a second tool,
-      <code style="font-family:var(--font-mono);font-size:11px">launch_shiny_hello</code>, whose resource is a trivial
-      &quot;hello world&quot; HTML body (no Shiny, no path rewriting, no shim).
-      Ask Claude <em>&quot;open the shiny hello world&quot;</em> via the shiny
-      connector. If the hello iframe mounts: the bug is in the embedded Shiny
-      content (we need to fix the rewrite / shim). If neither hello nor
-      dashboard mount: the bug is in the shiny-mcp dispatcher (tool/resource
-      shape, capabilities, or some required field we're missing).
+      <strong style="color:var(--text-1)">Root cause found:</strong>
+      The hello A/B test failed too, which ruled out the embedded Shiny
+      content. The actual issue: the iframe was being mounted by Claude's
+      MCP Apps SDK but the host gates visibility on
+      <code style="font-family:var(--font-mono);font-size:11px">ui/notifications/initialized</code>
+      coming back from the iframe. The NAV AI shell does that handshake
+      via <code style="font-family:var(--font-mono);font-size:11px">shell.js</code>;
+      our hello-world HTML had no JS and the Shiny embed had no MCP-aware
+      JS, so neither sent the handshake — host kept the iframes invisible.
+      Fix: a minimal MCP Apps handshake JS now ships inline in both the
+      hello resource and the dashboard shim (immediately before Shiny's
+      own scripts), so the iframes announce themselves and the host flips
+      them visible.
     </p>
 
     <div class="receipt" style="margin-bottom:12px">

@@ -113,6 +113,49 @@ SHINY_HELLO_RESOURCE: dict[str, Any] = {
 }
 
 
+# Minimal MCP Apps host handshake. The host gates iframe visibility on
+# `ui/notifications/initialized` coming back from the iframe — without it,
+# the iframe is mounted but never made visible to the user. The NAV AI
+# shell sends this via shell.js; any custom MCP App iframe (hello, or the
+# rewritten Shiny embed) has to do it too.
+MCP_APP_HANDSHAKE_JS = """(function(){
+  function send(m){ try{ window.parent.postMessage(m,'*'); }catch(e){} }
+  var initId = Math.floor(Math.random()*1e9);
+  send({jsonrpc:'2.0', id: initId, method:'ui/initialize', params:{
+    protocolVersion:'2025-06-18',
+    appCapabilities:{availableDisplayModes:['inline']},
+    clientInfo:{name:'shiny-mcp-iframe',version:'0.1.0'}
+  }});
+  setTimeout(function(){
+    send({jsonrpc:'2.0', method:'ui/notifications/initialized', params:{}});
+  }, 0);
+  window.addEventListener('message', function(ev){
+    var m = ev.data;
+    if (!m || m.jsonrpc !== '2.0') return;
+    if (m.method === 'ping' && m.id != null) {
+      send({jsonrpc:'2.0', id: m.id, result: {}});
+    }
+    if (m.method === 'ui/resource-teardown' && m.id != null) {
+      send({jsonrpc:'2.0', id: m.id, result: {}});
+    }
+  });
+  function reportSize(){
+    var h = Math.max(
+      document.documentElement.scrollHeight,
+      document.body ? document.body.scrollHeight : 0,
+      200);
+    send({jsonrpc:'2.0', method:'ui/notifications/size-changed', params:{
+      height: h,
+      width: document.documentElement.clientWidth || window.innerWidth
+    }});
+  }
+  setTimeout(reportSize, 100);
+  setTimeout(reportSize, 600);
+  setTimeout(reportSize, 1500);
+  window.addEventListener('resize', reportSize);
+})();"""
+
+
 SHINY_HELLO_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -129,7 +172,9 @@ SHINY_HELLO_HTML = """<!doctype html>
     border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;
     font-family:'JetBrains Mono',monospace;font-size:10px;
     letter-spacing:.1em;margin-bottom:14px}
-</style></head>
+</style>
+<script>__MCP_APP_HANDSHAKE__</script>
+</head>
 <body><div class="wrap">
   <div class="tag">SHINY-MCP · IFRAME MOUNTED</div>
   <h1>Hello from the shiny-mcp connector</h1>
@@ -141,7 +186,7 @@ SHINY_HELLO_HTML = """<!doctype html>
   <p style="color:#7a8087">Tool: <code>launch_shiny_hello</code> ·
     Resource: <code>ui://shiny/hello</code></p>
 </div></body></html>
-"""
+""".replace("__MCP_APP_HANDSHAKE__", MCP_APP_HANDSHAKE_JS)
 
 
 # ---------------------------------------------------------------------------

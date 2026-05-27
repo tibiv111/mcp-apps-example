@@ -18,7 +18,7 @@ forecast, catalog) are untouched.
 | C | Same-origin reverse proxy at `/shiny-proxy/*` | Still blocked: shell document is loaded under the host's opaque origin, so even our own service URL is cross-origin from inside the shell | Works | ~120 LOC: HTTP forwarding + HTML path rewriting + WebSocket pump. See [app/shiny_proxy.py](../app/shiny_proxy.py). |
 | D | URL-form MCP resource via `launch_shiny` tool | Rejected outright. Calling the tool from chat surfaces: `Unsupported UI resource content format: {…mimeType:"text/uri-list;profile=mcp-app"…}` | n/a | Implemented: new `launch_shiny` tool + `ui://nav-ai/shiny` URL-list resource. See [app/schemas.py](../app/schemas.py), [app/mcp/tools.py](../app/mcp/tools.py), [app/mcp/router.py](../app/mcp/router.py). |
 | E | Server-side embed via `launch_shiny_embedded` tool, rendered in-shell via `iframe.srcdoc` | Shell renders (path rewrite + srcdoc trick slip past `frame-src 'self'`), but every reactive output stayed empty. Console: `Connecting to 'wss://…/shiny-proxy/websocket/' violates connect-src 'self' https://nav-ai-mock-mcp.onrender.com`. Fix: add the `wss://` form to `connectDomains` explicitly (CSP3 scheme flex isn't honoured in practice). After redeploy, expected to render with live data. | Works | Implemented: ~80 LOC of HTML rewrite + WebSocket-constructor shim + fetch/XHR interceptors in `fetch_embedded_html`. See [app/shiny_proxy.py](../app/shiny_proxy.py) and the `ui://nav-ai/shiny-embedded` resource in [app/schemas.py](../app/schemas.py). |
-| F | Expose Shiny as a separate MCP server at `/shiny-mcp` — peer to NAV AI rather than nested inside its shell | Server wire perfect (trace shows `tools/call launch_shiny_dashboard` → `resources/read ui://shiny/dashboard`, both 200). Per Claude's docs the host mounts a fresh iframe per tool call (multiple iframes coexist per session), but the shiny-mcp iframe didn't appear in the chat transcript. A/B test tool `launch_shiny_hello` (trivial HTML body) wired in to distinguish dispatcher bugs from embed-content bugs — open investigation. | Works (server live; mounting under investigation) | Implemented: ~250 LOC standalone MCP dispatcher with trace integration in [app/shiny_mcp.py](../app/shiny_mcp.py) reusing `fetch_embedded_html`. |
+| F | Expose Shiny as a separate MCP server at `/shiny-mcp` — peer to NAV AI rather than nested inside its shell | Server wire perfect. Host mounts the iframe per spec but keeps it invisible until the iframe sends `ui/notifications/initialized` — the existing NAV AI shell does this via `shell.js`. Our hello-world and Shiny embed had no MCP-aware JS, so the handshake never fired. Fixed by inlining a minimal MCP App handshake into both shiny-mcp resources (and into the dashboard's pre-Shiny shim). | Works after handshake fix | Implemented: ~250 LOC standalone MCP dispatcher with trace integration + MCP handshake in [app/shiny_mcp.py](../app/shiny_mcp.py), plus handshake injection in [app/shiny_proxy.py](../app/shiny_proxy.py). |
 
 ### Why each one exists
 
@@ -134,24 +134,31 @@ as a *second* MCP connector in their Claude config (alongside the
 existing `nav-ai-mock-mcp` one). In chat, "open the Shiny dashboard"
 prompts Claude to invoke `launch_shiny_dashboard` on the new server.
 
-**Empirical result so far:** the host calls the tool and reads the
-resource (both 200 in the trace), but no iframe has been observed in
-the chat transcript at the corresponding assistant turn. Per the
-Claude docs the host mounts a fresh iframe per tool call (multiple
-iframes coexist per session), so this *should* work — investigation
-is ongoing.
+**Root cause and fix:** the host calls the tool and reads the
+resource (both 200 in the trace), and per the Claude docs it *does*
+mount an iframe — but it keeps the iframe invisible until the iframe
+sends `ui/notifications/initialized` to the parent via postMessage.
+The existing NAV AI shell does this in `shell.js`. Our hello-world
+HTML had no JS and the Shiny embed had no MCP-aware JS, so the
+handshake never fired and both iframes stayed unmounted from the
+user's perspective.
 
-To distinguish "the dispatcher is wrong" from "the embedded Shiny
-HTML is wrong," shiny-mcp now exposes a second tool:
+Fix: a small MCP App handshake JS is now inlined into:
 
-- `launch_shiny_hello` / `ui://shiny/hello` — a trivial inline-HTML
-  resource with no Shiny content, no path rewriting, no JS shim.
+- `SHINY_HELLO_HTML` in [app/shiny_mcp.py](../app/shiny_mcp.py) — the trivial
+  hello-world resource.
+- The pre-Shiny shim in [app/shiny_proxy.py](../app/shiny_proxy.py) — runs
+  before Shiny's scripts so the iframe announces itself even before
+  Shiny finishes loading.
 
-Ask Claude *"open the shiny hello world"* via the shiny connector.
-If an iframe appears at that turn, mounting works and the bug is in
-the dashboard's rewritten content. If neither hello nor dashboard
-mount, the bug is in the shiny-mcp dispatcher (capabilities, metadata
-shape, or some required field we're missing).
+The handshake does three things:
+
+1. Sends `ui/initialize` request (with `availableDisplayModes: ['inline']`).
+2. Sends `ui/notifications/initialized` after a tick.
+3. Reports size via `ui/notifications/size-changed`, responds to pings.
+
+The A/B test tool `launch_shiny_hello` stays in place as a quick
+diagnostic for future regressions.
 
 ### Empirical limits of MCP App rendering (in progress)
 
@@ -168,11 +175,12 @@ open thread:
   primary MCP server, rendered via the existing iframe slot, with
   `srcdoc` populated client-side to keep the existing NAV AI surface
   alongside.
-- **Card F is wire-correct but the iframe mount is under investigation.**
-  Claude's docs say the host mounts a fresh iframe per tool call and
-  multiple iframes coexist per session, so the second MCP server's
-  resource should render. The `launch_shiny_hello` A/B test will tell
-  us whether the gap is in our dispatcher or the embedded Shiny content.
+- **Card F works after a missing handshake was added.** The host
+  mounts the iframe per spec but keeps it invisible until the iframe
+  posts `ui/notifications/initialized` back to the parent. The
+  existing NAV AI shell did this via `shell.js`; the new shiny-mcp
+  resources didn't, so they mounted but stayed hidden. A minimal MCP
+  App handshake is now inlined into both shiny-mcp resources.
 
 ### What Card D actually does
 

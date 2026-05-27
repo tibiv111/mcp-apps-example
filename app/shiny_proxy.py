@@ -168,6 +168,10 @@ def _build_inline_shim(proxy_base_abs: str, proxy_ws_abs: str) -> str:
     """
     Pre-Shiny JS shim. Adapts the runtime for a srcdoc iframe whose
     base URL is the parent shell's origin (not ours):
+      - MCP Apps host handshake → send `ui/initialize` request and
+        `ui/notifications/initialized` notification to the parent
+        immediately. Required for Card F: the host gates iframe
+        visibility on the initialized notification.
       - WebSocket constructor → force the proxy WS URL. Shiny's URL
         builder uses location.host, which is empty/host-origin here.
       - fetch + XMLHttpRequest → rewrite relative/absolute-path URLs
@@ -178,6 +182,44 @@ def _build_inline_shim(proxy_base_abs: str, proxy_ws_abs: str) -> str:
         `base-uri 'self'` and rejects any non-self base URL.
     """
     return (
+        # MCP Apps host handshake — must run BEFORE Shiny's scripts so
+        # the parent flips the iframe visible promptly. Same shape as
+        # the constant in app/shiny_mcp.py but inlined here so this
+        # file stays self-contained.
+        "<script>(function(){"
+        "function send(m){ try{ window.parent.postMessage(m,'*'); }catch(e){} }"
+        "var initId = Math.floor(Math.random()*1e9);"
+        "send({jsonrpc:'2.0', id: initId, method:'ui/initialize', params:{"
+        "protocolVersion:'2025-06-18',"
+        "appCapabilities:{availableDisplayModes:['inline']},"
+        "clientInfo:{name:'shiny-embed-iframe',version:'0.1.0'}"
+        "}});"
+        "setTimeout(function(){"
+        "send({jsonrpc:'2.0', method:'ui/notifications/initialized', params:{}});"
+        "}, 0);"
+        "window.addEventListener('message', function(ev){"
+        "var m = ev.data;"
+        "if (!m || m.jsonrpc !== '2.0') return;"
+        "if (m.method === 'ping' && m.id != null) {"
+        "send({jsonrpc:'2.0', id: m.id, result: {}});"
+        "}"
+        "if (m.method === 'ui/resource-teardown' && m.id != null) {"
+        "send({jsonrpc:'2.0', id: m.id, result: {}});"
+        "}"
+        "});"
+        "function reportSize(){"
+        "var h = Math.max(document.documentElement.scrollHeight,"
+        "document.body ? document.body.scrollHeight : 0, 200);"
+        "send({jsonrpc:'2.0', method:'ui/notifications/size-changed', params:{"
+        "height: h,"
+        "width: document.documentElement.clientWidth || window.innerWidth"
+        "}});"
+        "}"
+        "setTimeout(reportSize, 100);"
+        "setTimeout(reportSize, 1500);"
+        "window.addEventListener('resize', reportSize);"
+        "})();</script>"
+        # ── Shiny URL rewriting + WebSocket shim ──
         "<script>(function(){"
         f'var PROXY_BASE="{proxy_base_abs.rstrip("/")}/";'
         'var PROXY_NO_SLASH=PROXY_BASE.replace(/\\/+$/,"");'

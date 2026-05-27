@@ -17,7 +17,8 @@ forecast, catalog) are untouched.
 | B | Open in a new tab via `window.open(SHINY_URL)` | Blocked: `Blocked opening … in a sandboxed frame whose 'allow-popups' permission is not set` | Works | Five lines |
 | C | Same-origin reverse proxy at `/shiny-proxy/*` | Still blocked: shell document is loaded under the host's opaque origin, so even our own service URL is cross-origin from inside the shell | Works | ~120 LOC: HTTP forwarding + HTML path rewriting + WebSocket pump. See [app/shiny_proxy.py](../app/shiny_proxy.py). |
 | D | URL-form MCP resource via `launch_shiny` tool | Rejected outright. Calling the tool from chat surfaces: `Unsupported UI resource content format: {…mimeType:"text/uri-list;profile=mcp-app"…}` | n/a | Implemented: new `launch_shiny` tool + `ui://nav-ai/shiny` URL-list resource. See [app/schemas.py](../app/schemas.py), [app/mcp/tools.py](../app/mcp/tools.py), [app/mcp/router.py](../app/mcp/router.py). |
-| E | Server-side embed via `launch_shiny_embedded` tool, rendered in-shell via `iframe.srcdoc` | Wire call accepted (host fetches the resource, doesn't mount a second iframe). srcdoc render inside Card E sidesteps the host's `frame-src 'self'` because srcdoc isn't a navigation. | Works | Implemented: ~80 LOC of HTML rewrite + WebSocket-constructor shim in `fetch_embedded_html`. See [app/shiny_proxy.py](../app/shiny_proxy.py) and the `ui://nav-ai/shiny-embedded` resource in [app/schemas.py](../app/schemas.py). |
+| E | Server-side embed via `launch_shiny_embedded` tool, rendered in-shell via `iframe.srcdoc` | Shell renders (path rewrite + srcdoc trick slip past `frame-src 'self'`), but every reactive output stayed empty. Console: `Connecting to 'wss://…/shiny-proxy/websocket/' violates connect-src 'self' https://nav-ai-mock-mcp.onrender.com`. Fix: add the `wss://` form to `connectDomains` explicitly (CSP3 scheme flex isn't honoured in practice). After redeploy, expected to render with live data. | Works | Implemented: ~80 LOC of HTML rewrite + WebSocket-constructor shim + fetch/XHR interceptors in `fetch_embedded_html`. See [app/shiny_proxy.py](../app/shiny_proxy.py) and the `ui://nav-ai/shiny-embedded` resource in [app/schemas.py](../app/schemas.py). |
+| F | Expose Shiny as a separate MCP server at `/shiny-mcp` — peer to NAV AI rather than nested inside its shell | Architecturally cleanest: each MCP server gets its own iframe slot in the host. The path rewriter + WS shim still do their work inside the resource, but the srcdoc workaround isn't needed because the host mounts the second server's resource as a fresh iframe naturally. Requires the user to add `https://…/shiny-mcp` as a separate connector in Claude. | Works (server endpoint live; render depends on Claude config) | Implemented: ~150 LOC standalone MCP dispatcher in [app/shiny_mcp.py](../app/shiny_mcp.py) reusing `fetch_embedded_html`. |
 
 ### Why each one exists
 
@@ -30,12 +31,19 @@ forecast, catalog) are untouched.
   `shiny::runApp` emits absolute paths like `/shared/shiny.min.js`.
 - **D** is the spec-clean answer, deferred to the host.
 - **E** is what's left when you need Shiny to render *today* inside
-  Claude: don't iframe Shiny — serve Shiny's HTML *as* the MCP resource
-  body. The shell's CSP allows the host's iframe to load scripts/styles
-  and open WebSockets to our origin (the `connectDomains` /
-  `resourceDomains` hints make that explicit), so once paths are
+  Claude *and* you only want one MCP server connected: don't iframe
+  Shiny — serve Shiny's HTML *as* the MCP resource body. The shell's
+  CSP allows the host's iframe to load scripts/styles and open
+  WebSockets to our origin (the `connectDomains` / `resourceDomains`
+  hints make that explicit, with both `https://` and `wss://` schemes
+  listed because browsers don't auto-extend), so once paths are
   rewritten and the WS URL is shimmed, Shiny runs inside the
   inline-HTML iframe just like the existing shell.
+- **F** is the architecturally honest answer: Shiny is its own thing,
+  not a sub-view of NAV AI. Expose it as its own MCP server endpoint
+  and let Claude compose multiple servers. The path rewriting still
+  happens (it's inherent to embedding Shiny anywhere it doesn't own
+  origin root) but the cross-resource workarounds drop away.
 
 ### Empirical CSP findings
 
@@ -106,6 +114,26 @@ host's content origin (`*.claudemcpcontent.com`), which 404s with
 execute the 404 body as JS). The fix is to never rely on `<base>` —
 rewrite every URL to an absolute form server-side, plus intercept
 fetch/XHR at runtime for URLs Shiny generates dynamically.
+
+### What Card F actually does
+
+A standalone MCP server endpoint lives at `BASE_URL/shiny-mcp`,
+implemented in [app/shiny_mcp.py](../app/shiny_mcp.py). It exposes:
+
+- One tool: `launch_shiny_dashboard`
+- One resource: `ui://shiny/dashboard` (`mimeType: text/html;profile=mcp-app`,
+  body = the same rewritten Shiny HTML the Card E resource serves).
+
+To use it, the user adds `https://nav-ai-mock-mcp.onrender.com/shiny-mcp`
+as a *second* MCP connector in their Claude config (alongside the
+existing `nav-ai-mock-mcp` one). In chat, "open the Shiny dashboard"
+prompts Claude to invoke `launch_shiny_dashboard` on the new server.
+The host should mount the dashboard in its own iframe, peer to the
+NAV AI workspace — no srcdoc workaround needed, because mounting the
+first UI resource from a fresh server is the supported path.
+
+The Shiny rewrite + WebSocket shim machinery is reused as-is. The
+only new code is the MCP dispatcher boilerplate.
 
 ### What Card D actually does
 

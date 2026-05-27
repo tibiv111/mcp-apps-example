@@ -299,6 +299,14 @@ RESOURCES: list[dict[str, Any]] = [
         # AI shell, so today's Claude actually renders it. CSP hints must
         # allow connect/script/style back to BASE_URL because every
         # rewritten asset URL and the patched WebSocket point there.
+        #
+        # `connectDomains` includes BOTH https:// and wss:// forms of
+        # BASE_URL. Browsers in practice do NOT extend a `https://host`
+        # source in connect-src to permit `wss://host`; CSP3's scheme-
+        # flex matching is inconsistent in implementations. Empirically
+        # Claude generates `connect-src 'self' <connectDomains…>` exactly
+        # as listed, so the wss form must be listed explicitly or
+        # Shiny's WebSocket gets blocked.
         "uri": SHINY_EMBED_URI,
         "name": "NAV AI — R Shiny (server-side embed)",
         "description": "R Shiny dashboard embedded via server-side HTML rewrite + WS shim.",
@@ -306,7 +314,10 @@ RESOURCES: list[dict[str, Any]] = [
         "_meta": {
             "ui": {
                 "csp": {
-                    "connectDomains": [BASE_URL],
+                    "connectDomains": [
+                        BASE_URL,
+                        BASE_URL.replace("https://", "wss://").replace("http://", "ws://"),
+                    ],
                     "resourceDomains": [BASE_URL],
                 },
                 "prefersBorder": True,

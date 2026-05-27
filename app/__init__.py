@@ -24,6 +24,7 @@ from .diagnostics.router import router as diagnostics_router
 from .jobs.sse import router as jobs_router
 from .mcp.router import router as mcp_router
 from .oauth.router import router as oauth_router
+from .shiny_mcp import router as shiny_mcp_router
 from .shiny_proxy import router as shiny_proxy_router
 from .ui.router import router as ui_router
 
@@ -88,6 +89,10 @@ def create_app() -> FastAPI:
     # Same-origin reverse proxy in front of the standalone R Shiny service.
     # Demonstrated as one of the integration options in the Shiny launcher tab.
     app.include_router(shiny_proxy_router)
+    # Standalone MCP server endpoint exposing only the Shiny dashboard. Card F
+    # in the launcher: the user adds /shiny-mcp as a second MCP server in
+    # Claude's config, getting a peer iframe alongside the NAV AI workspace.
+    app.include_router(shiny_mcp_router)
 
     @app.get("/")
     async def root() -> dict[str, object]:

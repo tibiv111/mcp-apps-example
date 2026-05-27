@@ -20,15 +20,29 @@
   <!-- ─── Diagnosis banner ─────────────────────────────────────────────── -->
   <div class="receipt" style="border-color:var(--accent);margin-bottom:18px">
     <div class="row" style="border-bottom:1px solid var(--border)">
-      <span class="k" style="color:var(--accent)">Diagnosis</span>
+      <span class="k" style="color:var(--accent)">Diagnosis (so far)</span>
       <span class="v">
-        In Claude, the shell HTML is rendered under an opaque host origin,
-        so <code style="font-family:var(--font-mono);font-size:11px">'self'</code>
+        In Claude, the shell HTML renders under an opaque host origin, so
+        <code style="font-family:var(--font-mono);font-size:11px">'self'</code>
         in <code style="font-family:var(--font-mono);font-size:11px">frame-src 'self'</code>
-        is <em>not</em> our service URL. That blocks every embed from inside
-        the shell — even back to our own domain. Card D (URL-form resource)
-        is the only spec-correct path; it asks the host to open its own
-        iframe with its own permissions.
+        is <em>not</em> our service URL — every `&lt;iframe src=&gt;` from
+        inside the shell is blocked, even back to our own domain.
+        <strong style="color:var(--text-1)">Card D</strong> (URL-form
+        resource) the host rejects outright with
+        <em>Unsupported UI resource content format</em>.
+        <strong style="color:var(--text-1)">Card E</strong>'s srcdoc trick
+        slips past <code style="font-family:var(--font-mono);font-size:11px">frame-src</code>
+        and Shiny now renders, but the iframe's
+        <code style="font-family:var(--font-mono);font-size:11px">connect-src 'self' https://nav-ai-mock-mcp.onrender.com</code>
+        blocks the WebSocket to
+        <code style="font-family:var(--font-mono);font-size:11px">wss://…/shiny-proxy/websocket/</code>
+        (CSP3's https→wss scheme flex isn't honoured here), so reactive
+        outputs stay empty. The fix landed in the resource's
+        <code style="font-family:var(--font-mono);font-size:11px">connectDomains</code>:
+        the wss form is listed explicitly now.
+        <strong style="color:var(--text-1)">Card F</strong> takes the cleanest
+        architectural path: expose Shiny as a separate MCP server, let
+        Claude mount it as a peer iframe alongside this workspace.
       </span>
     </div>
   </div>
@@ -124,8 +138,14 @@
     <h3 style="margin:0 0 8px 0">Serve Shiny <em>as</em> an inline-HTML MCP resource</h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ BROWSER PREVIEW</span>
-      <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ EXPECTED TO RENDER IN CLAUDE</span>
+      <span style="background:#33301a;color:#e8c66e;border:1px solid #5a4f2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">~ RENDERS IN CLAUDE (NO LIVE DATA UNTIL WSS FIX REDEPLOYS)</span>
     </div>
+    <p style="margin:0 0 12px 0;color:var(--text-3);font-size:12px;background:#0d0d10;border:1px solid var(--border);border-radius:4px;padding:8px 10px">
+      <strong style="color:var(--text-1)">What we observed:</strong> Card E's Shiny shell rendered inside Claude (path rewriter + srcdoc trick worked) but every KPI/plot/table stayed empty. Console showed:
+      <code style="display:block;margin-top:6px;font-family:var(--font-mono);font-size:11px;color:var(--danger);white-space:pre-wrap">Connecting to 'wss://nav-ai-mock-mcp.onrender.com/shiny-proxy/websocket/' violates the following Content Security Policy directive: "connect-src 'self' https://nav-ai-mock-mcp.onrender.com".</code>
+      The iframe's CSP, derived from the resource's <code style="font-family:var(--font-mono)">connectDomains</code>, only allowed the
+      <code style="font-family:var(--font-mono)">https://</code> form — browsers don't auto-extend to <code style="font-family:var(--font-mono)">wss://</code> in practice. Fix: the resource now lists both schemes explicitly. Once redeployed, the live data should flow.
+    </p>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
       The MCP server fetches Shiny's HTML, rewrites every absolute path to point at
       <code style="font-family:var(--font-mono);color:var(--accent)">{{ base_url }}/shiny-proxy/</code>,
@@ -222,9 +242,88 @@
 }</code></pre>
   </div>
 
+  <!-- Card F ─── Separate MCP server (multi-server composition) ────── -->
+  <div class="card" style="margin-bottom:6px;border-color:var(--accent)">
+    <div class="tag" style="margin-bottom:6px;color:var(--accent)">F · SEPARATE MCP SERVER</div>
+    <h3 style="margin:0 0 8px 0">Expose Shiny as its own MCP server, peer to NAV AI</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ ARCHITECTURALLY CLEAN</span>
+      <span style="background:#33301a;color:#e8c66e;border:1px solid #5a4f2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">? NEEDS CLAUDE CONFIG CHANGE</span>
+    </div>
+    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
+      Instead of trying to mount Shiny inside this NAV AI shell, expose it
+      as a dedicated MCP server endpoint at
+      <code style="font-family:var(--font-mono);color:var(--accent);font-size:11px">/shiny-mcp</code>.
+      The user adds this URL as a <em>second</em> MCP server in Claude — each
+      MCP server gets its own iframe slot, so the Shiny dashboard mounts
+      as a peer of the NAV AI workspace rather than fighting for the same
+      surface. The path rewriter + WS shim still do their work inside that
+      iframe's resource, but the srcdoc trick from Card E isn't needed:
+      Claude mounts the second server's resource as a fresh iframe naturally.
+    </p>
+
+    <div class="receipt" style="margin-bottom:12px">
+      <div class="row">
+        <span class="k">MCP server URL</span>
+        <span class="v" style="font-family:var(--font-mono);color:var(--accent)" id="shiny-mcp-url">{{ base_url }}/shiny-mcp</span>
+      </div>
+      <div class="row">
+        <span class="k">Tool</span>
+        <span class="v" style="font-family:var(--font-mono)">launch_shiny_dashboard</span>
+      </div>
+      <div class="row">
+        <span class="k">Resource</span>
+        <span class="v" style="font-family:var(--font-mono)">ui://shiny/dashboard</span>
+      </div>
+      <div class="row">
+        <span class="k">MIME</span>
+        <span class="v" style="font-family:var(--font-mono)">text/html;profile=mcp-app</span>
+      </div>
+    </div>
+
+    <p style="margin:0 0 8px 0;color:var(--text-2);font-size:13px">
+      <strong style="color:var(--text-1)">To try it:</strong>
+    </p>
+    <ol style="margin:0 0 12px 0;padding-left:20px;color:var(--text-2);font-size:13px;line-height:1.6">
+      <li>Add <code style="font-family:var(--font-mono);color:var(--accent);font-size:11px">{{ base_url }}/shiny-mcp</code> as a connector in Claude (separate from the existing NAV AI server).</li>
+      <li>In chat, ask Claude: <em>"open the Shiny dashboard"</em>. Claude should invoke <code style="font-family:var(--font-mono);font-size:11px">launch_shiny_dashboard</code> on the new server.</li>
+      <li>The Shiny dashboard mounts in its own iframe — independent of this NAV AI workspace. Both stay live; both are addressable from the same chat.</li>
+    </ol>
+
+    <div class="actions">
+      <button class="primary" type="button" onclick="copyShinyMcpUrl()">Copy server URL</button>
+      <button class="ghost" type="button" onclick="askClaudeOpenShiny()">Ask Claude in chat ↗</button>
+      <span style="color:var(--text-3);font-size:11px;font-family:var(--font-mono);margin-left:8px" id="shiny-mcp-copy-status"></span>
+    </div>
+
+    <p style="margin:10px 0 0 0;color:var(--text-3);font-size:11px;font-family:var(--font-mono)">
+      Source: <code>app/shiny_mcp.py</code> (full MCP server in ~150 LOC, reuses
+      <code>fetch_embedded_html</code> from shiny_proxy).
+    </p>
+  </div>
+
   <script>
     function openShinyTab() {
       window.open({{ shiny_url | tojson }}, '_blank', 'noopener,noreferrer');
+    }
+    function copyShinyMcpUrl() {
+      const url = document.getElementById('shiny-mcp-url').textContent.trim();
+      const status = document.getElementById('shiny-mcp-copy-status');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(
+          () => { if (status) { status.textContent = '✓ copied'; setTimeout(() => status.textContent = '', 2000); } },
+          () => { if (status) { status.textContent = '✗ copy failed — select manually'; } }
+        );
+      } else if (status) {
+        status.textContent = 'clipboard API unavailable — select the URL above';
+      }
+    }
+    async function askClaudeOpenShiny() {
+      try {
+        await window.sendChatPrompt('Open the Shiny dashboard via the shiny-mcp MCP server.');
+      } catch (e) {
+        alert('Host did not accept the message: ' + ((e && e.message) || e));
+      }
     }
   </script>
 </section>

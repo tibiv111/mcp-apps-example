@@ -858,6 +858,16 @@
     }
   }
 
+  // Send an arbitrary user-role chat message to the host. Used by Card F
+  // in the Shiny launcher tab to nudge Claude into invoking a tool that
+  // lives on a different MCP server (the standalone /shiny-mcp endpoint).
+  window.sendChatPrompt = async function(text){
+    return callHost('sendMessage', {
+      role: 'user',
+      content: [{ type: 'text', text: String(text || '') }],
+    });
+  };
+
   // Public bindings. Each kind exposes both modes.
   window.discussForecast       = function(){ _discuss('forecast',  'inline'); };
   window.discussForecastSilent = function(){ _discuss('forecast',  'silent'); };

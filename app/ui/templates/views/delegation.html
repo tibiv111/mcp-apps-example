@@ -38,9 +38,9 @@
       </li>
     </ul>
     <div class="actions">
-      <button class="primary" type="button" onclick="openPeerTab()">Open peer iframe ↗</button>
-      <button class="ghost" type="button" onclick="copyPeerUrl()">Copy peer URL</button>
-      <span style="color:var(--text-3);font-size:11px;font-family:var(--font-mono);margin-left:8px" id="peer-copy-status"></span>
+      <button class="primary" type="button" onclick="askClaudeOpenPeer()">Ask Claude: open Shiny peer ↗</button>
+      <button class="ghost" type="button" onclick="openPeerTab()">Open standalone peer (local)</button>
+      <span style="color:var(--text-3);font-size:11px;font-family:var(--font-mono);margin-left:8px" id="peer-action-status"></span>
     </div>
   </div>
 
@@ -84,7 +84,10 @@
 
   <script>
     (() => {
-      const BASE = window.NAV_AI_BASE_URL;
+      // Read base_url at render time, not from window.NAV_AI_BASE_URL —
+      // that global is set in a <script> tag *after* the view includes,
+      // so it's still `undefined` when this IIFE runs at parse time.
+      const BASE = {{ base_url | tojson }};
       const PEER_URL = BASE + '/ui/peer';
       const TOPIC_OUT = 'hub→peer';
       const TOPIC_IN  = 'peer→hub';
@@ -93,20 +96,36 @@
       const status = () => document.getElementById('hub-send-status');
       const recvStatus = () => document.getElementById('hub-recv-status');
       const feed   = () => document.getElementById('hub-recv-feed');
+      const peerStatus = () => document.getElementById('peer-action-status');
 
-      window.openPeerTab = () => {
-        window.open(PEER_URL, '_blank', 'noopener,noreferrer');
+      // In Claude, popups are blocked by the host's iframe sandbox
+      // (frame-src 'self', no allow-popups). The peer iframe in that
+      // context is the Shiny MCP's mount — ask Claude to launch it.
+      window.askClaudeOpenPeer = async () => {
+        peerStatus().textContent = 'asking Claude…';
+        try {
+          await window.sendChatPrompt(
+            'Open the Shiny dashboard via the shiny-mcp MCP server ' +
+            '(launch_shiny_dashboard). I want the peer iframe to mount ' +
+            'so we can demo the hub↔peer bus.'
+          );
+          peerStatus().textContent = '✓ message sent to chat';
+          setTimeout(() => peerStatus().textContent = '', 3000);
+        } catch (e) {
+          peerStatus().textContent = 'chat send failed: ' +
+            ((e && e.message) || e) +
+            ' — try the local fallback';
+        }
       };
 
-      window.copyPeerUrl = () => {
-        const s = document.getElementById('peer-copy-status');
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(PEER_URL).then(
-            () => { s.textContent = '✓ copied'; setTimeout(() => s.textContent = '', 2000); },
-            () => { s.textContent = '✗ copy failed'; }
-          );
-        } else {
-          s.textContent = 'clipboard unavailable — URL: ' + PEER_URL;
+      // Local-preview fallback: works in a plain browser tab (where the
+      // sandbox allows popups), no-ops in Claude.
+      window.openPeerTab = () => {
+        peerStatus().textContent = 'opening ' + PEER_URL + ' …';
+        const w = window.open(PEER_URL, '_blank', 'noopener,noreferrer');
+        if (!w) {
+          peerStatus().textContent =
+            'blocked by sandbox — use "Ask Claude" above when inside Claude';
         }
       };
 

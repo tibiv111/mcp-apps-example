@@ -23,6 +23,7 @@ from typing import Any
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+from . import trace
 from .config import (
     BASE_URL,
     PROTOCOL_VERSION,
@@ -120,6 +121,34 @@ async def shiny_mcp_endpoint(request: Request) -> Response:
     params = payload.get("params") or {}
     is_notification = "id" not in payload
 
+    correlation = f"shiny-rpc-{req_id}" if req_id is not None else f"shiny-note-{method}"
+    trace.record(
+        "shiny_mcp.request",
+        layer="mcp",
+        summary=f"shiny-mcp ← {method}",
+        correlation_id=correlation,
+        detail={"method": method, "id": req_id, "params": params},
+    )
+
+    response = await _dispatch_shiny_mcp(method, req_id, params, is_notification)
+
+    status = getattr(response, "status_code", 200)
+    trace.record(
+        "shiny_mcp.response",
+        layer="mcp",
+        summary=f"shiny-mcp → {method} {status}",
+        correlation_id=correlation,
+        detail={"status": status},
+    )
+    return response
+
+
+async def _dispatch_shiny_mcp(
+    method: str | None,
+    req_id: Any,
+    params: dict[str, Any],
+    is_notification: bool,
+) -> Response:
     if method == "initialize":
         response = JSONResponse(
             _result(

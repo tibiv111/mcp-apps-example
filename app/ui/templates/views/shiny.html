@@ -154,17 +154,19 @@
       <div class="row"><span class="k">host action</span><span class="v" id="lse-action">—</span></div>
     </div>
     <p style="margin:0 0 8px 0;color:var(--text-3);font-size:12px">
-      Browser-preview render (loads <code style="font-family:var(--font-mono);font-size:11px">/shiny-embed.html</code>
-      directly, same content as the MCP resource):
+      In-shell render via <code style="font-family:var(--font-mono);font-size:11px">iframe.srcdoc</code>
+      (populated by the button — empty until you click). srcdoc isn't a
+      navigation, so it isn't subject to the host's <code style="font-family:var(--font-mono);font-size:11px">frame-src 'self'</code>
+      check the way <code style="font-family:var(--font-mono);font-size:11px">src=</code> is. If srcdoc passes,
+      this is what Shiny rendering inside Claude looks like:
     </p>
     <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0d0d10">
       <iframe
-        src="{{ base_url }}/shiny-embed.html"
-        title="Shiny — server-side embed"
-        style="display:block;border:0;width:100%;height:400px;background:#0d0d10"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-        referrerpolicy="no-referrer"
-        loading="lazy"></iframe>
+        id="shiny-embed-iframe"
+        title="Shiny — server-side embed (srcdoc)"
+        style="display:block;border:0;width:100%;height:480px;background:#0d0d10"
+        sandbox="allow-scripts allow-same-origin allow-forms"
+        referrerpolicy="no-referrer"></iframe>
     </div>
   </div>
 
@@ -174,19 +176,20 @@
     <h3 style="margin:0 0 8px 0">Let the host open its own iframe</h3>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ SPEC-CORRECT</span>
-      <span style="background:#33301a;color:#e8c66e;border:1px solid #5a4f2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">? DEPENDS ON HOST</span>
+      <span style="background:#3a1a1a;color:#e8746e;border:1px solid #5a2a2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✗ HOST REJECTS</span>
     </div>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
       The MCP server returns a URL-form resource
       (<code style="font-family:var(--font-mono);font-size:11px">{{ '"' }}mimeType{{ '"' }}: {{ '"' }}text/uri-list;profile=mcp-app{{ '"' }}</code>)
       with <code style="font-family:var(--font-mono);font-size:11px">_meta.ui.externalUrl</code> set to
       <code style="font-family:var(--font-mono);color:var(--accent);font-size:11px">{{ shiny_url }}</code>.
-      A compliant host fetches this resource and opens <em>its own</em>
-      iframe at the URL — the shell's CSP is never in the picture. Whether
-      Claude renders URL-form resources today is an empirical question;
-      the button below issues a real
-      <code style="font-family:var(--font-mono);color:var(--accent);font-size:11px">tools/call launch_shiny</code>
-      and you can watch the host's response in <a href="{{ base_url }}/diagnostics" target="_blank" rel="noopener" style="color:var(--accent)">/diagnostics</a>.
+      A compliant host would open <em>its own</em> iframe at the URL — the
+      shell's CSP would never be in the picture.
+      <strong style="color:var(--text-1)">Empirically, Claude rejects this MIME today.</strong>
+      Calling the tool from chat surfaces the error:
+      <code style="display:block;margin-top:6px;padding:8px 10px;background:#0d0d10;border:1px solid var(--border);border-radius:4px;font-family:var(--font-mono);font-size:11px;color:var(--danger);white-space:pre-wrap">Unsupported UI resource content format: {"uri":"ui://nav-ai/shiny","mimeType":"text/uri-list;profile=mcp-app",…}</code>
+      So Card D is wire-format-correct and unambiguously not the path for today's host.
+      Watch the trace in <a href="{{ base_url }}/diagnostics" target="_blank" rel="noopener" style="color:var(--accent)">/diagnostics</a>.
     </p>
     <div class="actions" style="margin-bottom:12px">
       <button class="primary" id="launch-shiny-btn" type="button" onclick="launchShiny()">Call launch_shiny ↗</button>

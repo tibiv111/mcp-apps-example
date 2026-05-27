@@ -501,22 +501,37 @@
   // body with Shiny's HTML rewritten + WebSocket shim injected. Same
   // MIME as the NAV AI shell, so today's Claude actually renders it.
   window.launchShinyEmbedded = async function(){
-    const btn = document.getElementById('launch-shiny-embedded-btn');
-    const box = document.getElementById('launch-shiny-embedded-result');
+    const btn   = document.getElementById('launch-shiny-embedded-btn');
+    const box   = document.getElementById('launch-shiny-embedded-result');
+    const frame = document.getElementById('shiny-embed-iframe');
     if (!btn || !box) return;
     btn.disabled = true; btn.textContent = 'Calling launch_shiny_embedded…';
     box.classList.add('hidden');
     try {
+      // Spec-correct MCP wire path: tool call + resources/read. Today's
+      // Claude fetches the result but doesn't mount a second iframe for
+      // it (see Card E commentary in shiny/README.md), so the visible
+      // demo comes from srcdoc'ing the same HTML below.
       await sendRequest('tools/call', { name: 'launch_shiny_embedded', arguments: {} });
       const resRead = await sendRequest('resources/read', { uri: 'ui://nav-ai/shiny-embedded' });
       const first = ((resRead && resRead.contents) || [])[0] || {};
+      const html  = first.text || '';
+
+      // The pragmatic in-shell render. srcdoc isn't a navigation, so the
+      // host's `frame-src 'self'` doesn't gate it (the same CSP that
+      // blocks `<iframe src=…>` pointing at our origin). Inside the
+      // srcdoc document, Shiny's rewritten asset URLs + the WS shim
+      // point at our /shiny-proxy/, which the iframe's connect-src will
+      // need to allow.
+      if (frame && html) frame.srcdoc = html;
+
       document.getElementById('lse-uri').textContent  = first.uri || '—';
       document.getElementById('lse-mime').textContent = first.mimeType || '—';
-      document.getElementById('lse-len').textContent  = (first.text || '').length.toLocaleString() + ' chars';
+      document.getElementById('lse-len').textContent  = html.length.toLocaleString() + ' chars';
       document.getElementById('lse-action').textContent =
-        'host should mount this inline HTML in its own iframe — check above the chat for a new Shiny workspace';
+        'MCP wire call sent (see /diagnostics). In-shell render mounted via srcdoc below.';
       box.classList.remove('hidden');
-      btn.textContent = '✓ called launch_shiny_embedded';
+      btn.textContent = '✓ embedded';
       setTimeout(() => { btn.disabled = false; btn.textContent = 'Call launch_shiny_embedded ↗'; }, 2400);
     } catch (e) {
       document.getElementById('lse-uri').textContent  = '—';

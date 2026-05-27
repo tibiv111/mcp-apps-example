@@ -16,8 +16,8 @@ forecast, catalog) are untouched.
 | A | Direct nested iframe `<iframe src=SHINY_URL>` | Blocked: `Framing '…shiny.onrender.com/' violates frame-src 'self' blob: data:` | Works | Zero |
 | B | Open in a new tab via `window.open(SHINY_URL)` | Blocked: `Blocked opening … in a sandboxed frame whose 'allow-popups' permission is not set` | Works | Five lines |
 | C | Same-origin reverse proxy at `/shiny-proxy/*` | Still blocked: shell document is loaded under the host's opaque origin, so even our own service URL is cross-origin from inside the shell | Works | ~120 LOC: HTTP forwarding + HTML path rewriting + WebSocket pump. See [app/shiny_proxy.py](../app/shiny_proxy.py). |
-| D | URL-form MCP resource via `launch_shiny` tool | Depends on whether the host renders URL-form resources. Today Claude appears to ignore them | n/a | Implemented: new `launch_shiny` tool + `ui://nav-ai/shiny` URL-list resource. See [app/schemas.py](../app/schemas.py), [app/mcp/tools.py](../app/mcp/tools.py), [app/mcp/router.py](../app/mcp/router.py). |
-| E | Server-side embed as inline-HTML MCP resource via `launch_shiny_embedded` tool | Expected to render — same MIME and rendering path as the existing NAV AI shell | Works | Implemented: ~80 LOC of HTML rewrite + WebSocket-constructor shim in `fetch_embedded_html`. See [app/shiny_proxy.py](../app/shiny_proxy.py) and the `ui://nav-ai/shiny-embedded` resource in [app/schemas.py](../app/schemas.py). |
+| D | URL-form MCP resource via `launch_shiny` tool | Rejected outright. Calling the tool from chat surfaces: `Unsupported UI resource content format: {…mimeType:"text/uri-list;profile=mcp-app"…}` | n/a | Implemented: new `launch_shiny` tool + `ui://nav-ai/shiny` URL-list resource. See [app/schemas.py](../app/schemas.py), [app/mcp/tools.py](../app/mcp/tools.py), [app/mcp/router.py](../app/mcp/router.py). |
+| E | Server-side embed via `launch_shiny_embedded` tool, rendered in-shell via `iframe.srcdoc` | Wire call accepted (host fetches the resource, doesn't mount a second iframe). srcdoc render inside Card E sidesteps the host's `frame-src 'self'` because srcdoc isn't a navigation. | Works | Implemented: ~80 LOC of HTML rewrite + WebSocket-constructor shim in `fetch_embedded_html`. See [app/shiny_proxy.py](../app/shiny_proxy.py) and the `ui://nav-ai/shiny-embedded` resource in [app/schemas.py](../app/schemas.py). |
 
 ### Why each one exists
 
@@ -73,10 +73,17 @@ Calling **Call launch_shiny_embedded ↗** in the Shiny tab issues a real
    `location.host`, which is empty in an inline-HTML iframe.
 
 The returned resource has `mimeType: text/html;profile=mcp-app` — the
-same as the NAV AI shell. The host should mount it the same way it
-mounts the workspace: a new iframe rendered alongside the chat. Inside
-that iframe, Shiny's JS runs, connects to our WebSocket proxy, and the
-dashboard appears.
+same as the NAV AI shell. **Empirically, today's Claude accepts the
+fetch but doesn't mount it as a second iframe** (the shell is already
+mounted; there's no host convention for "open this new UI resource
+alongside the existing one"). To still make the demo visible, the
+shell-side handler takes the same HTML that came back from
+`resources/read` and assigns it to the existing
+`<iframe id="shiny-embed-iframe">`'s `srcdoc` attribute. `srcdoc`
+isn't a navigation, so the host's `frame-src 'self'` doesn't gate it
+the way `src=` is gated. The iframe renders the embedded HTML in
+place, Shiny's JS runs inside it, and the WS shim points its socket
+at our proxy. The visible "Shiny inside Claude" demo lives here.
 
 ### What Card D actually does
 

@@ -5,38 +5,131 @@
     <span class="sep">·</span>
     <span style="color:var(--accent);font-family:var(--font-mono);font-size:10px">EXPERIMENT</span>
   </div>
-  <h1 class="view-title">R Shiny — pricing live</h1>
+  <h1 class="view-title">R Shiny — integration options</h1>
   <p class="view-lede">
-    Standalone R Shiny app embedded as a nested iframe. It pulls
-    <code style="font-family:var(--font-mono);color:var(--accent)">/dashboard/snapshot</code>
-    and listens to
-    <code style="font-family:var(--font-mono);color:var(--accent)">/backend/pricing-events</code>
-    on the same backend that powers the other views — so an approve/submit
-    in chat or the pricing form shows up here within a second.
+    Embedding R Shiny inside an MCP App resource is not a single decision —
+    the right path depends on the host's iframe sandbox, whether Shiny needs
+    to be reachable from the user's browser, and how much engineering you're
+    willing to spend. The cards below show four approaches running against
+    the same backing app (<code style="font-family:var(--font-mono);color:var(--accent)">{{ shiny_url }}</code>),
+    so you can compare in place.
   </p>
 
-  {% if shiny_url %}
-  <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0d0d10">
-    <iframe
-      src="{{ shiny_url }}"
-      title="R Shiny — pricing live"
-      style="display:block;border:0;width:100%;height:720px;background:#0d0d10"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-      referrerpolicy="no-referrer"
-      loading="lazy"></iframe>
+  <!-- Card 1 ─── Direct nested iframe ─────────────────────────────────── -->
+  <div class="card" style="margin-bottom:18px">
+    <div class="tag" style="margin-bottom:6px">A · DIRECT NESTED IFRAME</div>
+    <h3 style="margin:0 0 8px 0">Iframe a hosted Shiny URL directly</h3>
+    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
+      Simplest possible wiring: an
+      <code style="font-family:var(--font-mono);color:var(--accent)">&lt;iframe src="{{ shiny_url }}"&gt;</code>
+      lives inside the MCP shell.
+      <strong style="color:var(--text-1)">Works</strong> in the browser preview at <code>/ui/shell</code>.
+      <strong style="color:var(--danger)">Blocked by Claude's host CSP</strong>
+      (<code style="font-family:var(--font-mono);font-size:11px">frame-src 'self' blob: data:</code>)
+      because the iframe loads a different origin than the shell.
+    </p>
+    {% if shiny_url %}
+    <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0d0d10">
+      <iframe
+        src="{{ shiny_url }}"
+        title="Shiny — direct nested iframe"
+        style="display:block;border:0;width:100%;height:480px;background:#0d0d10"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        referrerpolicy="no-referrer"
+        loading="lazy"></iframe>
+    </div>
+    {% else %}
+    <div class="receipt" style="border-color:var(--danger)">
+      <div class="row">
+        <span class="k">SHINY_URL not set</span>
+        <span class="v" style="color:var(--danger)">See shiny/README.md</span>
+      </div>
+    </div>
+    {% endif %}
   </div>
-  <p style="font-family:var(--font-mono);font-size:11px;color:var(--text-3);margin-top:10px">
-    Source: <code>{{ shiny_url }}</code> — start with
-    <code>Rscript -e "shiny::runApp('shiny', port=3838, host='127.0.0.1')"</code>.
-  </p>
-  {% else %}
-  <div class="receipt" style="border-color:var(--danger)">
-    <div class="row">
-      <span class="k">Shiny URL not set</span>
-      <span class="v" style="color:var(--danger)">
-        Set <code>SHINY_URL</code> env var, then reload. See <code>shiny/README.md</code>.
+
+  <!-- Card 2 ─── Open in new tab ──────────────────────────────────────── -->
+  <div class="card" style="margin-bottom:18px">
+    <div class="tag" style="margin-bottom:6px">B · OPEN IN NEW TAB</div>
+    <h3 style="margin:0 0 8px 0">Punch out of the iframe sandbox entirely</h3>
+    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
+      A button that does <code style="font-family:var(--font-mono);color:var(--accent)">window.open(SHINY_URL, '_blank')</code>.
+      The new tab loads at the top level — no MCP sandbox, no CSP path through the shell.
+      <strong style="color:var(--text-1)">Always works.</strong>
+      Tradeoff: you lose the in-canvas feel and the user context-switches to another tab.
+    </p>
+    <div class="actions">
+      <button class="primary" type="button" onclick="openShinyTab()">Open Shiny dashboard ↗</button>
+      <span style="color:var(--text-3);font-size:11px;font-family:var(--font-mono);margin-left:8px">
+        target: {{ shiny_url }}
       </span>
     </div>
   </div>
-  {% endif %}
+
+  <!-- Card 3 ─── Same-origin reverse proxy ────────────────────────────── -->
+  <div class="card" style="margin-bottom:18px">
+    <div class="tag" style="margin-bottom:6px">C · SAME-ORIGIN REVERSE PROXY</div>
+    <h3 style="margin:0 0 8px 0">Front Shiny with this service so the iframe is same-origin</h3>
+    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
+      FastAPI proxies
+      <code style="font-family:var(--font-mono);color:var(--accent)">/shiny-proxy/*</code>
+      (HTTP + WebSocket) to the Shiny service. The iframe <code>src</code> is
+      <code style="font-family:var(--font-mono);color:var(--accent)">/shiny-proxy/</code> — same-origin to the shell,
+      so the host's <code style="font-family:var(--font-mono);font-size:11px">frame-src 'self'</code> permits it.
+      <strong style="color:var(--text-1)">Works inside Claude</strong> at the cost of real engineering:
+      Shiny's HTML uses absolute paths that have to be rewritten, and the WebSocket
+      upgrade has to be pumped bidirectionally.
+      Source: <code style="font-family:var(--font-mono);font-size:11px">app/shiny_proxy.py</code>.
+    </p>
+    <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0d0d10">
+      <iframe
+        src="{{ base_url }}/shiny-proxy/"
+        title="Shiny — same-origin reverse proxy"
+        style="display:block;border:0;width:100%;height:480px;background:#0d0d10"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        referrerpolicy="no-referrer"
+        loading="lazy"></iframe>
+    </div>
+  </div>
+
+  <!-- Card 4 ─── URL-form MCP resource (doc-only) ─────────────────────── -->
+  <div class="card" style="margin-bottom:6px">
+    <div class="tag" style="margin-bottom:6px">D · URL-FORM MCP RESOURCE</div>
+    <h3 style="margin:0 0 8px 0">Let the host open its own iframe (documentation only)</h3>
+    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
+      Instead of returning inline HTML from
+      <code style="font-family:var(--font-mono);color:var(--accent)">resources/read</code>,
+      the MCP server returns a URL pointer. The host opens its own iframe at the
+      Shiny URL — no nesting, no shell-side CSP path. This is the cleanest option
+      spec-wise, but client support is narrow: today Claude renders inline HTML
+      resources reliably but treats URL-form resources more conservatively.
+    </p>
+    <pre style="background:#0d0d10;border:1px solid var(--border);border-radius:6px;padding:12px 14px;font-family:var(--font-mono);font-size:11px;line-height:1.55;color:var(--text-2);overflow-x:auto;margin:0 0 10px 0"><code>// Hypothetical resources/read response — not yet implemented in this repo.
+{
+  "contents": [{
+    "uri": "ui://nav-ai/shiny",
+    "mimeType": "text/uri-list",
+    "text": "{{ shiny_url }}",
+    "_meta": {
+      "io.modelcontextprotocol/ui": {
+        "displayMode": "inline",
+        "externalUrl": "{{ shiny_url }}"
+      }
+    }
+  }]
+}</code></pre>
+    <p style="margin:0;color:var(--text-3);font-size:12px">
+      Implementing it would add a new tool (e.g. <code>launch_shiny</code>) that
+      returns this shape from
+      <code style="font-family:var(--font-mono)">app/mcp/router.py</code>'s
+      <code style="font-family:var(--font-mono)">resources/read</code> handler. Whether it actually renders
+      depends on the host honoring the URL form.
+    </p>
+  </div>
+
+  <script>
+    function openShinyTab() {
+      window.open({{ shiny_url | tojson }}, '_blank', 'noopener,noreferrer');
+    }
+  </script>
 </section>

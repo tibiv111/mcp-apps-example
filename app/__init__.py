@@ -24,6 +24,7 @@ from .diagnostics.router import router as diagnostics_router
 from .jobs.sse import router as jobs_router
 from .mcp.router import router as mcp_router
 from .oauth.router import router as oauth_router
+from .shiny_proxy import router as shiny_proxy_router
 from .ui.router import router as ui_router
 
 
@@ -84,6 +85,9 @@ def create_app() -> FastAPI:
     app.include_router(diagnostics_router)
     # Admin endpoints that exercise server-pushed resource updates.
     app.include_router(admin_router)
+    # Same-origin reverse proxy in front of the standalone R Shiny service.
+    # Demonstrated as one of the integration options in the Shiny launcher tab.
+    app.include_router(shiny_proxy_router)
 
     @app.get("/")
     async def root() -> dict[str, object]:

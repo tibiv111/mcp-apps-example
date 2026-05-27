@@ -10,7 +10,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import BASE_URL, SHELL_MIME, SHELL_URI
+from .config import (
+    BASE_URL,
+    SHELL_MIME,
+    SHELL_URI,
+    SHINY_RESOURCE_MIME,
+    SHINY_URI,
+    SHINY_URL,
+)
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -28,6 +35,25 @@ TOOLS: list[dict[str, Any]] = [
         # Only the launching tool carries a resourceUri; the host uses this to
         # mount the iframe alongside the tool result.
         "_meta": {"ui": {"resourceUri": SHELL_URI}},
+    },
+    {
+        "name": "launch_shiny",
+        "title": "Open Shiny dashboard",
+        "description": (
+            "Open the standalone R Shiny dashboard. Returns a URL-form MCP "
+            "resource pointing at the Shiny service; a compliant host opens "
+            "its own iframe at that URL, sidestepping the shell's CSP. Use "
+            "this to demonstrate Card D in the Shiny launcher tab."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        # `resourceUri` tells the host which resource to fetch + render
+        # alongside the tool result. Mirrors the launch_nav_ai pattern, but
+        # the referenced resource is URL-form rather than inline HTML.
+        "_meta": {"ui": {"resourceUri": SHINY_URI}},
     },
     {
         "name": "submit_pricing_change",
@@ -210,13 +236,42 @@ RESOURCES: list[dict[str, Any]] = [
             "ui": {
                 # connectDomains  → CSP connect-src (SSE/fetch back to our server)
                 # resourceDomains → CSP script-src/style-src (shell.css, shell.js)
+                # frameDomains    → CSP frame-src (EXPERIMENTAL — see below)
                 # Without resourceDomains the host CSP blocks our /static assets.
+                #
+                # frameDomains is speculative: by analogy with the other two
+                # keys, listing origins here ought to extend frame-src so the
+                # shell can iframe them. Empirically Claude's host has been
+                # observed to enforce `frame-src 'self' blob: data:` with no
+                # extra origins; if this hint is honoured, Cards A and C in
+                # the Shiny tab would suddenly work. If not, it's harmless.
                 "csp": {
                     "connectDomains": [BASE_URL],
                     "resourceDomains": [BASE_URL],
+                    "frameDomains": [BASE_URL, SHINY_URL],
                 },
                 "prefersBorder": True,
             }
         },
-    }
+    },
+    {
+        # Card D: URL-form MCP resource. The host is expected to open its own
+        # iframe at `externalUrl` rather than embedding inline HTML — that's
+        # how URL-form resources sidestep the shell's CSP. Whether the host
+        # actually does that is up to it; older Claude builds simply render
+        # the resource as text.
+        "uri": SHINY_URI,
+        "name": "NAV AI — R Shiny dashboard",
+        "description": "External R Shiny dashboard for pricing telemetry.",
+        "mimeType": SHINY_RESOURCE_MIME,
+        "_meta": {
+            "ui": {
+                "externalUrl": SHINY_URL,
+                "csp": {
+                    "frameDomains": [SHINY_URL],
+                },
+                "prefersBorder": True,
+            }
+        },
+    },
 ]

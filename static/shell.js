@@ -496,6 +496,49 @@
     }
   };
 
+  // ── Card D: live launch_shiny call (URL-form MCP resource) ──
+  // Calls tools/call launch_shiny, then fetches the referenced resource
+  // via resources/read so we can show the URL-form payload + see whether
+  // the host opened its own iframe for it. Inspect the trace at
+  // /diagnostics to compare the host's behavior across builds.
+  window.launchShiny = async function(){
+    const btn = document.getElementById('launch-shiny-btn');
+    const box = document.getElementById('launch-shiny-result');
+    if (!btn || !box) return;
+    btn.disabled = true; btn.textContent = 'Calling launch_shiny…';
+    box.classList.add('hidden');
+    try {
+      // The tools/call itself is fire-and-acknowledge — the meaningful
+      // payload (URL + _meta) lives on the referenced resource.
+      await sendRequest('tools/call', { name: 'launch_shiny', arguments: {} });
+      const resRead = await sendRequest('resources/read', { uri: 'ui://nav-ai/shiny' });
+      const contents = (resRead && resRead.contents) || [];
+      const first = contents[0] || {};
+      const meta = (first._meta && first._meta.ui) || {};
+      document.getElementById('ls-uri').textContent  = first.uri || '—';
+      document.getElementById('ls-mime').textContent = first.mimeType || '—';
+      document.getElementById('ls-url').textContent  = meta.externalUrl || '—';
+      document.getElementById('ls-body').textContent = (first.text || '').trim() || '—';
+      // We can't directly detect whether the host opened a new iframe for
+      // the resource — but if it did, you'll see another mcp.request hit
+      // /diagnostics. Surface a hint so the demo has something visible
+      // even on hosts that ignore URL resources.
+      document.getElementById('ls-action').textContent =
+        'check /diagnostics for a follow-up resources/read or iframe load — see if the host honored the URL form';
+      box.classList.remove('hidden');
+      btn.textContent = '✓ called launch_shiny';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Call launch_shiny ↗'; }, 2400);
+    } catch (e) {
+      document.getElementById('ls-uri').textContent  = '—';
+      document.getElementById('ls-mime').textContent = '—';
+      document.getElementById('ls-url').textContent  = '—';
+      document.getElementById('ls-body').textContent = (e && e.message) || String(e);
+      document.getElementById('ls-action').textContent = 'tool call failed — check the message in body';
+      box.classList.remove('hidden');
+      btn.disabled = false; btn.textContent = 'Call launch_shiny ↗';
+    }
+  };
+
   // ── Catalog (calls backend MCP via the frontend's lookup_product tool) ──
   function renderCatalogReceipt(data){
     document.getElementById('c-sku').textContent      = data.sku || '—';

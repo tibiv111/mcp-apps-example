@@ -28,6 +28,9 @@ from ..config import (
     SERVER_VERSION,
     SHELL_MIME,
     SHELL_URI,
+    SHINY_RESOURCE_MIME,
+    SHINY_URI,
+    SHINY_URL,
 )
 from ..schemas import RESOURCES, TOOLS
 from ..ui.render import render_shell_html
@@ -300,23 +303,45 @@ async def _dispatch(
 
     if method == "resources/read":
         uri = params.get("uri")
-        if uri != SHELL_URI:
-            return JSONResponse(_error(req_id, -32602, f"Unknown resource: {uri}"))
-        return JSONResponse(
-            _result(
-                req_id,
-                {
-                    "contents": [
-                        {
-                            "uri": SHELL_URI,
-                            "mimeType": SHELL_MIME,
-                            "text": render_shell_html(),
-                            "_meta": RESOURCES[0]["_meta"],
-                        }
-                    ]
-                },
+        if uri == SHELL_URI:
+            shell_resource = next(r for r in RESOURCES if r["uri"] == SHELL_URI)
+            return JSONResponse(
+                _result(
+                    req_id,
+                    {
+                        "contents": [
+                            {
+                                "uri": SHELL_URI,
+                                "mimeType": SHELL_MIME,
+                                "text": render_shell_html(),
+                                "_meta": shell_resource["_meta"],
+                            }
+                        ]
+                    },
+                )
             )
-        )
+        if uri == SHINY_URI:
+            # URL-form resource — body is the URL itself per text/uri-list
+            # (RFC 2483). `_meta.ui.externalUrl` is the host-friendly form
+            # of the same fact; hosts that honour URL resources read it
+            # from there instead of parsing the text body.
+            shiny_resource = next(r for r in RESOURCES if r["uri"] == SHINY_URI)
+            return JSONResponse(
+                _result(
+                    req_id,
+                    {
+                        "contents": [
+                            {
+                                "uri": SHINY_URI,
+                                "mimeType": SHINY_RESOURCE_MIME,
+                                "text": SHINY_URL + "\n",
+                                "_meta": shiny_resource["_meta"],
+                            }
+                        ]
+                    },
+                )
+            )
+        return JSONResponse(_error(req_id, -32602, f"Unknown resource: {uri}"))
 
     if method == "resources/subscribe":
         # We don't track which URI which session asked for — the only resource

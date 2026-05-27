@@ -13,23 +13,68 @@ forecast, catalog) are untouched.
 
 | # | Approach | Status in Claude | Status in browser preview | Engineering effort |
 | --- | --- | --- | --- | --- |
-| A | Direct nested iframe `<iframe src=SHINY_URL>` | Blocked by host CSP `frame-src 'self' blob: data:` | Works | Zero |
-| B | Open in a new tab via `window.open(SHINY_URL)` | Works (escapes the sandbox) | Works | Five lines |
-| C | Same-origin reverse proxy at `/shiny-proxy/*` | Works (same-origin passes `frame-src 'self'`) | Works | ~120 LOC: HTTP forwarding + HTML path rewriting + WebSocket pump. See [app/shiny_proxy.py](../app/shiny_proxy.py). |
-| D | URL-form MCP resource (host opens its own iframe) | Depends on client honoring URL resources — Claude's support is narrow today | n/a | New tool/resource that returns `text/uri-list`; not implemented in this repo |
+| A | Direct nested iframe `<iframe src=SHINY_URL>` | Blocked: `Framing '…shiny.onrender.com/' violates frame-src 'self' blob: data:` | Works | Zero |
+| B | Open in a new tab via `window.open(SHINY_URL)` | Blocked: `Blocked opening … in a sandboxed frame whose 'allow-popups' permission is not set` | Works | Five lines |
+| C | Same-origin reverse proxy at `/shiny-proxy/*` | Still blocked: shell document is loaded under the host's opaque origin, so even our own service URL is cross-origin from inside the shell | Works | ~120 LOC: HTTP forwarding + HTML path rewriting + WebSocket pump. See [app/shiny_proxy.py](../app/shiny_proxy.py). |
+| D | URL-form MCP resource via `launch_shiny` tool | Depends on whether the host renders URL-form resources. Today Claude appears to ignore them | n/a | Implemented: new `launch_shiny` tool + `ui://nav-ai/shiny` URL-list resource. See [app/schemas.py](../app/schemas.py), [app/mcp/tools.py](../app/mcp/tools.py), [app/mcp/router.py](../app/mcp/router.py). |
 
 ### Why each one exists
 
 - **A** is the obvious wiring. Shows up first because that's where
   everyone starts.
-- **B** is the "stop fighting the sandbox" answer. Worse UX, perfect
-  reliability.
+- **B** is the "stop fighting the sandbox" answer.
 - **C** is what you reach for when the in-canvas experience is
   non-negotiable. It costs you a bidirectional WebSocket proxy and
   HTML rewriting because `shiny::runApp` emits absolute paths like
   `/shared/shiny.min.js`.
-- **D** is the spec-clean answer, deferred to the host. Production-grade
-  if your clients support URL resources; otherwise theoretical.
+- **D** is the spec-clean answer, deferred to the host.
+
+### Empirical CSP findings
+
+The launcher tab's diagnosis section summarises what we observed. The key
+insight is that `frame-src 'self'` in Claude's host CSP does **not** mean
+"the MCP server's URL." Claude renders the MCP resource HTML under its
+own opaque origin (a blob:/data: URL or an internal `mcp_apps://…`
+scheme), so `'self'` is the host's origin — every external URL,
+**including our own service**, is cross-origin from the shell's
+perspective. That's why Card C (the same-origin reverse proxy) fails
+inside Claude: it's only same-origin to *our service*, not to the *shell
+document*.
+
+There's a speculative hint at [app/schemas.py](../app/schemas.py)
+(`csp.frameDomains`) by analogy with the known `connectDomains` /
+`resourceDomains` keys. If a future Claude build honours it, Cards A and
+C would unblock without any client-side changes; today it appears to be
+silently ignored.
+
+### What Card D actually does
+
+Calling **Call launch_shiny ↗** in the Shiny tab issues a real
+`tools/call launch_shiny`, then `resources/read ui://nav-ai/shiny`. The
+server responds with:
+
+```json
+{
+  "contents": [{
+    "uri": "ui://nav-ai/shiny",
+    "mimeType": "text/uri-list;profile=mcp-app",
+    "text": "https://nav-ai-mock-shiny.onrender.com\n",
+    "_meta": {
+      "ui": {
+        "externalUrl": "https://nav-ai-mock-shiny.onrender.com",
+        "csp": { "frameDomains": ["https://nav-ai-mock-shiny.onrender.com"] },
+        "prefersBorder": true
+      }
+    }
+  }]
+}
+```
+
+The card's result panel shows exactly this payload so you can verify the
+wire format. Whether the host then opens its own iframe at
+`externalUrl` is up to the host — watch [/diagnostics](../app/diagnostics)
+after clicking the button to see if a follow-up `resources/read` or
+iframe load happens.
 
 ## What the Shiny app shows
 

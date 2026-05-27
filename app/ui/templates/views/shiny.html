@@ -7,33 +7,52 @@
   </div>
   <h1 class="view-title">R Shiny — integration options</h1>
   <p class="view-lede">
-    Embedding R Shiny inside an MCP App resource is not a single decision —
-    the right path depends on the host's iframe sandbox, whether Shiny needs
-    to be reachable from the user's browser, and how much engineering you're
-    willing to spend. The cards below show four approaches running against
-    the same backing app (<code style="font-family:var(--font-mono);color:var(--accent)">{{ shiny_url }}</code>),
-    so you can compare in place.
+    Embedding R Shiny inside an MCP App is not a single decision. Four
+    approaches are shown below, each pointing at the same Shiny service
+    (<code style="font-family:var(--font-mono);color:var(--accent)">{{ shiny_url }}</code>).
+    Status badges report what we've empirically observed in
+    <em>browser preview</em> (loading <code>/ui/shell</code> directly)
+    versus <em>inside Claude's MCP host</em>, which enforces
+    <code style="font-family:var(--font-mono);font-size:11px">frame-src 'self' blob: data:</code>
+    and a sandbox without <code>allow-popups</code>.
   </p>
 
-  <!-- Card 1 ─── Direct nested iframe ─────────────────────────────────── -->
+  <!-- ─── Diagnosis banner ─────────────────────────────────────────────── -->
+  <div class="receipt" style="border-color:var(--accent);margin-bottom:18px">
+    <div class="row" style="border-bottom:1px solid var(--border)">
+      <span class="k" style="color:var(--accent)">Diagnosis</span>
+      <span class="v">
+        In Claude, the shell HTML is rendered under an opaque host origin,
+        so <code style="font-family:var(--font-mono);font-size:11px">'self'</code>
+        in <code style="font-family:var(--font-mono);font-size:11px">frame-src 'self'</code>
+        is <em>not</em> our service URL. That blocks every embed from inside
+        the shell — even back to our own domain. Card D (URL-form resource)
+        is the only spec-correct path; it asks the host to open its own
+        iframe with its own permissions.
+      </span>
+    </div>
+  </div>
+
+  <!-- Card A ─── Direct nested iframe ─────────────────────────────────── -->
   <div class="card" style="margin-bottom:18px">
     <div class="tag" style="margin-bottom:6px">A · DIRECT NESTED IFRAME</div>
     <h3 style="margin:0 0 8px 0">Iframe a hosted Shiny URL directly</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ BROWSER PREVIEW</span>
+      <span style="background:#3a1a1a;color:#e8746e;border:1px solid #5a2a2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✗ BLOCKED IN CLAUDE</span>
+    </div>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
-      Simplest possible wiring: an
-      <code style="font-family:var(--font-mono);color:var(--accent)">&lt;iframe src="{{ shiny_url }}"&gt;</code>
-      lives inside the MCP shell.
-      <strong style="color:var(--text-1)">Works</strong> in the browser preview at <code>/ui/shell</code>.
-      <strong style="color:var(--danger)">Blocked by Claude's host CSP</strong>
-      (<code style="font-family:var(--font-mono);font-size:11px">frame-src 'self' blob: data:</code>)
-      because the iframe loads a different origin than the shell.
+      Plain
+      <code style="font-family:var(--font-mono);color:var(--accent)">&lt;iframe src="{{ shiny_url }}"&gt;</code>.
+      In Claude, fails with
+      <code style="font-family:var(--font-mono);font-size:11px;color:var(--danger)">Framing '{{ shiny_url }}' violates frame-src 'self' blob: data:</code>.
     </p>
     {% if shiny_url %}
     <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0d0d10">
       <iframe
         src="{{ shiny_url }}"
         title="Shiny — direct nested iframe"
-        style="display:block;border:0;width:100%;height:480px;background:#0d0d10"
+        style="display:block;border:0;width:100%;height:400px;background:#0d0d10"
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
         referrerpolicy="no-referrer"
         loading="lazy"></iframe>
@@ -48,15 +67,19 @@
     {% endif %}
   </div>
 
-  <!-- Card 2 ─── Open in new tab ──────────────────────────────────────── -->
+  <!-- Card B ─── Open in new tab ──────────────────────────────────────── -->
   <div class="card" style="margin-bottom:18px">
     <div class="tag" style="margin-bottom:6px">B · OPEN IN NEW TAB</div>
     <h3 style="margin:0 0 8px 0">Punch out of the iframe sandbox entirely</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ BROWSER PREVIEW</span>
+      <span style="background:#3a1a1a;color:#e8746e;border:1px solid #5a2a2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✗ BLOCKED IN CLAUDE</span>
+    </div>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
-      A button that does <code style="font-family:var(--font-mono);color:var(--accent)">window.open(SHINY_URL, '_blank')</code>.
-      The new tab loads at the top level — no MCP sandbox, no CSP path through the shell.
-      <strong style="color:var(--text-1)">Always works.</strong>
-      Tradeoff: you lose the in-canvas feel and the user context-switches to another tab.
+      <code style="font-family:var(--font-mono);color:var(--accent)">window.open(SHINY_URL, '_blank')</code>.
+      In Claude, fails with
+      <code style="font-family:var(--font-mono);font-size:11px;color:var(--danger)">Blocked opening … in a new window because the request was made in a sandboxed frame whose 'allow-popups' permission is not set</code>
+      — the parent (host-owned) sandbox is missing <code>allow-popups</code>; nothing the resource HTML sets can override it.
     </p>
     <div class="actions">
       <button class="primary" type="button" onclick="openShinyTab()">Open Shiny dashboard ↗</button>
@@ -66,65 +89,84 @@
     </div>
   </div>
 
-  <!-- Card 3 ─── Same-origin reverse proxy ────────────────────────────── -->
+  <!-- Card C ─── Same-origin reverse proxy ────────────────────────────── -->
   <div class="card" style="margin-bottom:18px">
     <div class="tag" style="margin-bottom:6px">C · SAME-ORIGIN REVERSE PROXY</div>
     <h3 style="margin:0 0 8px 0">Front Shiny with this service so the iframe is same-origin</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ BROWSER PREVIEW</span>
+      <span style="background:#3a1a1a;color:#e8746e;border:1px solid #5a2a2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✗ BLOCKED IN CLAUDE</span>
+    </div>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
       FastAPI proxies
       <code style="font-family:var(--font-mono);color:var(--accent)">/shiny-proxy/*</code>
-      (HTTP + WebSocket) to the Shiny service. The iframe <code>src</code> is
-      <code style="font-family:var(--font-mono);color:var(--accent)">/shiny-proxy/</code> — same-origin to the shell,
-      so the host's <code style="font-family:var(--font-mono);font-size:11px">frame-src 'self'</code> permits it.
-      <strong style="color:var(--text-1)">Works inside Claude</strong> at the cost of real engineering:
-      Shiny's HTML uses absolute paths that have to be rewritten, and the WebSocket
-      upgrade has to be pumped bidirectionally.
-      Source: <code style="font-family:var(--font-mono);font-size:11px">app/shiny_proxy.py</code>.
+      (HTTP + WebSocket) to the Shiny service so the iframe target is on our
+      domain — see <code style="font-family:var(--font-mono);font-size:11px">app/shiny_proxy.py</code>.
+      In a normal browser this passes <code>frame-src 'self'</code>. In
+      Claude it still fails: the shell document is loaded under the host's
+      opaque origin, so even our own service URL counts as cross-origin
+      from inside the shell.
     </p>
     <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0d0d10">
       <iframe
         src="{{ base_url }}/shiny-proxy/"
         title="Shiny — same-origin reverse proxy"
-        style="display:block;border:0;width:100%;height:480px;background:#0d0d10"
+        style="display:block;border:0;width:100%;height:400px;background:#0d0d10"
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
         referrerpolicy="no-referrer"
         loading="lazy"></iframe>
     </div>
   </div>
 
-  <!-- Card 4 ─── URL-form MCP resource (doc-only) ─────────────────────── -->
-  <div class="card" style="margin-bottom:6px">
-    <div class="tag" style="margin-bottom:6px">D · URL-FORM MCP RESOURCE</div>
-    <h3 style="margin:0 0 8px 0">Let the host open its own iframe (documentation only)</h3>
+  <!-- Card D ─── URL-form MCP resource (live) ─────────────────────────── -->
+  <div class="card" style="margin-bottom:6px;border-color:var(--accent)">
+    <div class="tag" style="margin-bottom:6px;color:var(--accent)">D · URL-FORM MCP RESOURCE</div>
+    <h3 style="margin:0 0 8px 0">Let the host open its own iframe</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <span style="background:#1a3322;color:#5fb878;border:1px solid #2a5a3a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">✓ SPEC-CORRECT</span>
+      <span style="background:#33301a;color:#e8c66e;border:1px solid #5a4f2a;padding:3px 8px;border-radius:4px;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em">? DEPENDS ON HOST</span>
+    </div>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
-      Instead of returning inline HTML from
-      <code style="font-family:var(--font-mono);color:var(--accent)">resources/read</code>,
-      the MCP server returns a URL pointer. The host opens its own iframe at the
-      Shiny URL — no nesting, no shell-side CSP path. This is the cleanest option
-      spec-wise, but client support is narrow: today Claude renders inline HTML
-      resources reliably but treats URL-form resources more conservatively.
+      The MCP server returns a URL-form resource
+      (<code style="font-family:var(--font-mono);font-size:11px">{{ '"' }}mimeType{{ '"' }}: {{ '"' }}text/uri-list;profile=mcp-app{{ '"' }}</code>)
+      with <code style="font-family:var(--font-mono);font-size:11px">_meta.ui.externalUrl</code> set to
+      <code style="font-family:var(--font-mono);color:var(--accent);font-size:11px">{{ shiny_url }}</code>.
+      A compliant host fetches this resource and opens <em>its own</em>
+      iframe at the URL — the shell's CSP is never in the picture. Whether
+      Claude renders URL-form resources today is an empirical question;
+      the button below issues a real
+      <code style="font-family:var(--font-mono);color:var(--accent);font-size:11px">tools/call launch_shiny</code>
+      and you can watch the host's response in <a href="{{ base_url }}/diagnostics" target="_blank" rel="noopener" style="color:var(--accent)">/diagnostics</a>.
     </p>
-    <pre style="background:#0d0d10;border:1px solid var(--border);border-radius:6px;padding:12px 14px;font-family:var(--font-mono);font-size:11px;line-height:1.55;color:var(--text-2);overflow-x:auto;margin:0 0 10px 0"><code>// Hypothetical resources/read response — not yet implemented in this repo.
+    <div class="actions" style="margin-bottom:12px">
+      <button class="primary" id="launch-shiny-btn" type="button" onclick="launchShiny()">Call launch_shiny ↗</button>
+      <span style="color:var(--text-3);font-size:11px;font-family:var(--font-mono);margin-left:8px">
+        resource: ui://nav-ai/shiny
+      </span>
+    </div>
+    <div id="launch-shiny-result" class="receipt hidden">
+      <div class="row"><span class="k">tool</span><span class="v" style="font-family:var(--font-mono)">launch_shiny</span></div>
+      <div class="row"><span class="k">resource URI</span><span class="v" style="font-family:var(--font-mono)" id="ls-uri">—</span></div>
+      <div class="row"><span class="k">resource MIME</span><span class="v" style="font-family:var(--font-mono)" id="ls-mime">—</span></div>
+      <div class="row"><span class="k">externalUrl</span><span class="v" style="font-family:var(--font-mono);color:var(--accent)" id="ls-url">—</span></div>
+      <div class="row"><span class="k">body</span><span class="v" style="font-family:var(--font-mono);font-size:11px;white-space:pre-wrap" id="ls-body">—</span></div>
+      <div class="row"><span class="k">host action</span><span class="v" id="ls-action">—</span></div>
+    </div>
+    <pre style="background:#0d0d10;border:1px solid var(--border);border-radius:6px;padding:12px 14px;font-family:var(--font-mono);font-size:11px;line-height:1.55;color:var(--text-2);overflow-x:auto;margin:0"><code>// What our resources/read actually returns now:
 {
   "contents": [{
     "uri": "ui://nav-ai/shiny",
-    "mimeType": "text/uri-list",
-    "text": "{{ shiny_url }}",
+    "mimeType": "text/uri-list;profile=mcp-app",
+    "text": "{{ shiny_url }}\n",
     "_meta": {
-      "io.modelcontextprotocol/ui": {
-        "displayMode": "inline",
-        "externalUrl": "{{ shiny_url }}"
+      "ui": {
+        "externalUrl": "{{ shiny_url }}",
+        "csp": { "frameDomains": ["{{ shiny_url }}"] },
+        "prefersBorder": true
       }
     }
   }]
 }</code></pre>
-    <p style="margin:0;color:var(--text-3);font-size:12px">
-      Implementing it would add a new tool (e.g. <code>launch_shiny</code>) that
-      returns this shape from
-      <code style="font-family:var(--font-mono)">app/mcp/router.py</code>'s
-      <code style="font-family:var(--font-mono)">resources/read</code> handler. Whether it actually renders
-      depends on the host honoring the URL form.
-    </p>
   </div>
 
   <script>

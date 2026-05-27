@@ -43,6 +43,14 @@ PROTOCOL_VERSION: str = "2025-06-18"
 SHELL_URI: str = "ui://nav-ai/shell"
 SHELL_MIME: str = "text/html;profile=mcp-app"  # exact, no space after ';'
 
+# Card D in the Shiny launcher tab: a URL-form MCP resource that points at
+# the standalone Shiny service. The intent is that a compliant host opens
+# its own iframe at SHINY_URL with its own permissions, bypassing the
+# shell's CSP entirely. Whether Claude's host honours URL resources today
+# is an empirical question — see shiny/README.md.
+SHINY_URI: str = "ui://nav-ai/shiny"
+SHINY_RESOURCE_MIME: str = "text/uri-list;profile=mcp-app"
+
 # --- Demo values -------------------------------------------------------------
 
 DEMO_USER: str = "demo-user@nav-ai.local"

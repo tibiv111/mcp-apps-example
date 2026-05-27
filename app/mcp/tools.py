@@ -25,6 +25,28 @@ from .. import pricing, state
 from ..jobs import runner as jobs_runner
 
 
+async def launch_shiny(_args: dict[str, Any], _token: str | None) -> dict[str, Any]:
+    """
+    Card D in the Shiny launcher tab. The host already learned the resource
+    URI from this tool's `_meta.ui.resourceUri` in `tools/list`, so it'll
+    fetch `ui://nav-ai/shiny` and (if it honours URL-form resources) open
+    its own iframe at the URL the resource carries. The text content here
+    is fallback for hosts without UI support.
+    """
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "Opening the R Shiny dashboard in a host-owned iframe "
+                    "(URL-form MCP resource). If your host doesn't honour "
+                    "URL resources, the tool returns the Shiny URL as text."
+                ),
+            }
+        ]
+    }
+
+
 async def launch_nav_ai(_args: dict[str, Any], _token: str | None) -> dict[str, Any]:
     """
     Per SEP-1865 the host already knows about the UI resource via this tool's
@@ -364,6 +386,7 @@ ToolHandler = Callable[[dict[str, Any], str | None], Awaitable[dict[str, Any]]]
 
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "launch_nav_ai": launch_nav_ai,
+    "launch_shiny": launch_shiny,
     "submit_pricing_change": submit_pricing_change,
     "start_forecast": start_forecast,
     "lookup_product": lookup_product,

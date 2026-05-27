@@ -60,6 +60,30 @@ SHINY_RESOURCE_MIME: str = "text/uri-list;profile=mcp-app"
 # rendering path as the existing NAV AI shell.
 SHINY_EMBED_URI: str = "ui://nav-ai/shiny-embedded"
 
+# --- Standalone shiny-mcp server (mounted at /shiny-mcp) ---------------------
+# Identity + resource URIs exposed by the SECOND MCP server in this process.
+# A user adds /shiny-mcp as a peer MCP in their Claude config; Claude mounts
+# each in its own iframe. Kept here (not in shiny_mcp.py) so the full URI
+# namespace this service serves is auditable from one file.
+SHINY_MCP_SERVER_NAME: str = "nav-ai-shiny-mcp"
+SHINY_MCP_DASHBOARD_URI: str = "ui://shiny/dashboard"
+SHINY_MCP_HELLO_URI: str = "ui://shiny/hello"
+
+
+def to_ws_url(http_url: str) -> str:
+    """
+    Convert a `http://` / `https://` URL to its ws:// / wss:// form,
+    preserving everything else (host, path, query). Used wherever a CSP
+    `connect-src` needs the websocket variant of a service URL listed
+    explicitly — browsers in practice don't extend an `https://host`
+    source to permit `wss://host` on the same host.
+    """
+    if http_url.startswith("https://"):
+        return "wss://" + http_url[len("https://"):]
+    if http_url.startswith("http://"):
+        return "ws://" + http_url[len("http://"):]
+    return http_url
+
 # --- Demo values -------------------------------------------------------------
 
 DEMO_USER: str = "demo-user@nav-ai.local"

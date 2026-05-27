@@ -32,6 +32,11 @@ mcp_subscribers: list[asyncio.Queue] = []
 # resources/updated; the direct channel is just for instant visual feedback.
 shell_event_subscribers: list[asyncio.Queue] = []
 
+# topic-id -> list of subscriber queues. The ResultsBus drains these when
+# any iframe POSTs /bus/publish; one queue per active /bus/subscribe SSE.
+# Topics are opaque strings the caller chooses (typically a delegation id).
+bus_subscribers: dict[str, list[asyncio.Queue]] = {}
+
 # Live, mutable shell state. The shell template renders these so server-side
 # pokes (POST /admin/*) reach the iframe via resources/updated + a re-read.
 shell_state: dict[str, Any] = {

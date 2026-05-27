@@ -29,9 +29,15 @@
     </div>
     <div class="card">
       <div class="tag">05 · EXPERIMENT</div>
-      <h3>R Shiny — integration options</h3>
-      <p>Six attempts to mount Shiny in an MCP App, each with the actual error or workaround documented. A–C are blocked by the host iframe sandbox; D rejected as unsupported MIME; E renders inline-HTML via srcdoc (works); F exposes Shiny as a separate MCP server (wire-correct, iframe mount under investigation with an A/B test).</p>
-      <button class="primary" onclick="show('shiny')">Compare options →</button>
+      <h3>R Shiny — peer MCP</h3>
+      <p>Shiny exposed as its own MCP server, mounting peer to NAV AI in Claude. Final pattern after five attempts (history one click away).</p>
+      <button class="primary" onclick="show('shiny')">Open Shiny page →</button>
+    </div>
+    <div class="card">
+      <div class="tag">06 · COMPOSITION</div>
+      <h3>Hub ↔ Shiny delegation</h3>
+      <p>Send data from NAV AI to the Shiny iframe and back, through the server-mediated ResultsBus. Two siblings under the host, one bus.</p>
+      <button class="primary" onclick="show('delegation')">Open delegation →</button>
     </div>
   </div>
 </section>

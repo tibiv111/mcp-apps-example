@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from . import bridge
 from .admin.router import router as admin_router
 from .backend.router import router as backend_router
+from .bus import router as bus_router
 from .config import BASE_URL, SERVER_NAME, SERVER_VERSION, STATIC_DIR
 from .diagnostics.router import router as diagnostics_router
 from .jobs.sse import router as jobs_router
@@ -93,6 +94,10 @@ def create_app() -> FastAPI:
     # in the launcher: the user adds /shiny-mcp as a second MCP server in
     # Claude's config, getting a peer iframe alongside the NAV AI workspace.
     app.include_router(shiny_mcp_router)
+    # ResultsBus: cross-iframe pub/sub relay. Lets a "hub" iframe delegate
+    # to a peer iframe (e.g. NAV AI ↔ Shiny) and receive an async result
+    # without going through the model. See app/bus.py for the contract.
+    app.include_router(bus_router)
 
     @app.get("/")
     async def root() -> dict[str, object]:

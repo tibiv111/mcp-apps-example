@@ -18,6 +18,7 @@ from .config import (
     SHINY_RESOURCE_MIME,
     SHINY_URI,
     SHINY_URL,
+    to_ws_url,
 )
 
 TOOLS: list[dict[str, Any]] = [
@@ -255,19 +256,15 @@ RESOURCES: list[dict[str, Any]] = [
             "ui": {
                 # connectDomains  → CSP connect-src (SSE/fetch back to our server)
                 # resourceDomains → CSP script-src/style-src (shell.css, shell.js)
-                # frameDomains    → CSP frame-src (EXPERIMENTAL — see below)
                 # Without resourceDomains the host CSP blocks our /static assets.
                 #
-                # frameDomains is speculative: by analogy with the other two
-                # keys, listing origins here ought to extend frame-src so the
-                # shell can iframe them. Empirically Claude's host has been
-                # observed to enforce `frame-src 'self' blob: data:` with no
-                # extra origins; if this hint is honoured, Cards A and C in
-                # the Shiny tab would suddenly work. If not, it's harmless.
+                # No frameDomains: the Claude host currently hard-codes
+                # `frame-src 'self' blob: data:` regardless of what we send.
+                # If that ever changes, Cards A and C in the Shiny tab would
+                # need it added back here pointing at BASE_URL and SHINY_URL.
                 "csp": {
                     "connectDomains": [BASE_URL],
                     "resourceDomains": [BASE_URL],
-                    "frameDomains": [BASE_URL, SHINY_URL],
                 },
                 "prefersBorder": True,
             }
@@ -286,9 +283,6 @@ RESOURCES: list[dict[str, Any]] = [
         "_meta": {
             "ui": {
                 "externalUrl": SHINY_URL,
-                "csp": {
-                    "frameDomains": [SHINY_URL],
-                },
                 "prefersBorder": True,
             }
         },
@@ -300,13 +294,10 @@ RESOURCES: list[dict[str, Any]] = [
         # allow connect/script/style back to BASE_URL because every
         # rewritten asset URL and the patched WebSocket point there.
         #
-        # `connectDomains` includes BOTH https:// and wss:// forms of
-        # BASE_URL. Browsers in practice do NOT extend a `https://host`
-        # source in connect-src to permit `wss://host`; CSP3's scheme-
-        # flex matching is inconsistent in implementations. Empirically
-        # Claude generates `connect-src 'self' <connectDomains…>` exactly
-        # as listed, so the wss form must be listed explicitly or
-        # Shiny's WebSocket gets blocked.
+        # `connectDomains` lists BOTH the https and wss forms of BASE_URL
+        # because browsers don't auto-extend a `https://host` source to
+        # `wss://host` — the wss form must be enumerated or Shiny's
+        # WebSocket gets blocked by `connect-src`.
         "uri": SHINY_EMBED_URI,
         "name": "NAV AI — R Shiny (server-side embed)",
         "description": "R Shiny dashboard embedded via server-side HTML rewrite + WS shim.",
@@ -314,10 +305,7 @@ RESOURCES: list[dict[str, Any]] = [
         "_meta": {
             "ui": {
                 "csp": {
-                    "connectDomains": [
-                        BASE_URL,
-                        BASE_URL.replace("https://", "wss://").replace("http://", "ws://"),
-                    ],
+                    "connectDomains": [BASE_URL, to_ws_url(BASE_URL)],
                     "resourceDomains": [BASE_URL],
                 },
                 "prefersBorder": True,

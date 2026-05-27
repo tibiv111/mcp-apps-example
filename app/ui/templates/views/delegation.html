@@ -1,0 +1,140 @@
+<section id="view-delegation" class="view hidden">
+  <div class="crumbs">
+    <button onclick="show('launcher')">← workspace</button>
+    <span class="sep">/</span><span>delegation</span>
+    <span class="sep">·</span>
+    <span style="color:var(--accent);font-family:var(--font-mono);font-size:10px">HUB ↔ SHINY</span>
+  </div>
+  <h1 class="view-title">Delegate to Shiny, listen for replies.</h1>
+  <p class="view-lede">
+    The hub (this iframe) and the Shiny iframe are siblings under Claude's
+    host. They cannot postMessage each other directly, so they relay
+    through this service's
+    <code style="font-family:var(--font-mono);color:var(--accent)">/bus/publish</code>
+    + <code style="font-family:var(--font-mono);color:var(--accent)">/bus/subscribe</code>
+    endpoints. Topics:
+    <code style="font-family:var(--font-mono)">hub→shiny</code> for outbound,
+    <code style="font-family:var(--font-mono)">shiny→hub</code> for replies.
+  </p>
+
+  <div class="card" style="margin-bottom:18px">
+    <div class="tag" style="margin-bottom:6px;color:var(--accent)">HUB · SEND</div>
+    <h3 style="margin:0 0 8px 0">Delegate a task to the Shiny iframe</h3>
+    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
+      Type a message, click Send. The Shiny iframe (below) shows the
+      payload and can reply with a result.
+    </p>
+    <div style="display:flex;gap:8px;align-items:stretch;margin-bottom:12px">
+      <input id="hub-send-input" type="text"
+        placeholder="e.g. 'analyze SKU-X12 elasticity'"
+        style="flex:1;background:#0d0d10;border:1px solid var(--border-2);color:var(--text);
+               padding:10px 12px;border-radius:4px;font-family:var(--font-mono);font-size:12px"
+        onkeydown="if(event.key==='Enter')hubSend()">
+      <button class="primary" type="button" onclick="hubSend()">Send → Shiny</button>
+    </div>
+    <div id="hub-send-status" style="font-family:var(--font-mono);font-size:11px;color:var(--text-3);min-height:1.2em"></div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px">
+    <div class="tag" style="margin-bottom:6px;color:var(--accent)">HUB · RECEIVE</div>
+    <h3 style="margin:0 0 8px 0">Replies from Shiny (live)</h3>
+    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
+      Subscribed to <code style="font-family:var(--font-mono)">/bus/subscribe?topic=shiny%E2%86%92hub</code>.
+      Every payload published on that topic streams in below.
+    </p>
+    <div id="hub-recv-status" style="font-family:var(--font-mono);font-size:11px;color:var(--text-3);margin-bottom:8px">
+      connecting…
+    </div>
+    <div id="hub-recv-feed"
+      style="background:#0d0d10;border:1px solid var(--border);border-radius:6px;
+             padding:10px 12px;font-family:var(--font-mono);font-size:12px;
+             min-height:120px;max-height:280px;overflow-y:auto">
+      <div style="color:var(--text-3);font-style:italic">no replies yet — click Send and watch the Shiny widget below</div>
+    </div>
+  </div>
+
+  <div class="card" style="border-color:var(--accent)">
+    <div class="tag" style="margin-bottom:6px;color:var(--accent)">SHINY · PEER IFRAME</div>
+    <h3 style="margin:0 0 8px 0">Shiny dashboard (with bus widget overlay)</h3>
+    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
+      Same embedded HTML as the
+      <button class="linklike" onclick="show('shiny')">peer MCP server</button>
+      would mount inside Claude. The
+      <code style="font-family:var(--font-mono);color:var(--accent)">shiny-embed-shim.js</code>
+      injects a small floating widget (top-right) with a Send button and
+      an incoming-message panel. In Claude this iframe lives under the
+      <code style="font-family:var(--font-mono)">shiny-mcp</code> server,
+      not under NAV AI — the bus is the only thing that connects them.
+    </p>
+    <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0d0d10">
+      <iframe
+        id="delegation-shiny-iframe"
+        src="{{ base_url }}/shiny-embed.html"
+        title="Shiny — delegation demo embed"
+        style="display:block;border:0;width:100%;height:560px;background:#0d0d10"
+        sandbox="allow-scripts allow-same-origin allow-forms"
+        referrerpolicy="no-referrer"></iframe>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const BASE = window.NAV_AI_BASE_URL;
+      const TOPIC_OUT = 'hub→shiny';
+      const TOPIC_IN  = 'shiny→hub';
+
+      const input  = () => document.getElementById('hub-send-input');
+      const status = () => document.getElementById('hub-send-status');
+      const recvStatus = () => document.getElementById('hub-recv-status');
+      const feed   = () => document.getElementById('hub-recv-feed');
+
+      window.hubSend = async function () {
+        const text = (input().value || '').trim();
+        if (!text) { status().textContent = 'enter a message first'; return; }
+        status().textContent = 'publishing…';
+        try {
+          const r = await fetch(BASE + '/bus/publish', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              topic: TOPIC_OUT,
+              payload: {from: 'hub', sent_at: Date.now(), text: text}
+            }),
+          });
+          const j = await r.json();
+          status().textContent = `→ ${j.delivered} listener(s) received the message`;
+          input().value = '';
+        } catch (e) {
+          status().textContent = 'publish failed: ' + ((e && e.message) || e);
+        }
+      };
+
+      // Subscribe to replies from Shiny. EventSource auto-reconnects on
+      // network blips, so we don't need our own retry loop.
+      let placeholderShown = true;
+      const url = BASE + '/bus/subscribe?topic=' + encodeURIComponent(TOPIC_IN);
+      const es = new EventSource(url);
+      es.onopen = () => { recvStatus().textContent = `subscribed → ${TOPIC_IN}`; };
+      es.onerror = () => { recvStatus().textContent = `reconnecting → ${TOPIC_IN}…`; };
+      es.addEventListener('message', (ev) => {
+        if (placeholderShown) { feed().innerHTML = ''; placeholderShown = false; }
+        let parsed;
+        try { parsed = JSON.parse(ev.data); } catch { parsed = ev.data; }
+        const row = document.createElement('div');
+        row.style.cssText = 'border-bottom:1px solid var(--border);padding:6px 0';
+        const ts = new Date().toLocaleTimeString();
+        row.innerHTML = '<span style="color:var(--text-3)">' + ts + '</span> ' +
+                        '<span style="color:var(--accent)">←</span> ' +
+                        '<span>' + escapeHtml(JSON.stringify(parsed)) + '</span>';
+        feed().appendChild(row);
+        feed().scrollTop = feed().scrollHeight;
+      });
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => (
+          {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+        ));
+      }
+    })();
+  </script>
+</section>

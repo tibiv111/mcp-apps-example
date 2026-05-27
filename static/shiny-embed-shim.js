@@ -77,8 +77,10 @@
   // topic `hub→shiny`, and a Send button that publishes a reply on
   // `shiny→hub`. Pure DOM, no Shiny bindings — survives any rebuild of
   // the Shiny client.
-  const TOPIC_IN = 'hub→shiny';
-  const TOPIC_OUT = 'shiny→hub';
+  // Topic pair must match the hub's delegation view and the standalone
+  // /ui/peer page — every iframe is just "a peer" from the bus's view.
+  const TOPIC_IN = 'hub→peer';
+  const TOPIC_OUT = 'peer→hub';
   // Bus URLs are absolute (start with https://…), and rewriteUrl leaves
   // already-schemed URLs alone — so the wrapped fetch is safe to use.
   const busPost = (topic, payload) => fetch(SERVICE_ORIGIN + '/bus/publish', {

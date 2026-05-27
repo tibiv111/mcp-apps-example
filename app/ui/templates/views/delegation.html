@@ -3,26 +3,55 @@
     <button onclick="show('launcher')">← workspace</button>
     <span class="sep">/</span><span>delegation</span>
     <span class="sep">·</span>
-    <span style="color:var(--accent);font-family:var(--font-mono);font-size:10px">HUB ↔ SHINY</span>
+    <span style="color:var(--accent);font-family:var(--font-mono);font-size:10px">HUB ↔ PEER</span>
   </div>
-  <h1 class="view-title">Delegate to Shiny, listen for replies.</h1>
+  <h1 class="view-title">Two peer iframes, one bus.</h1>
   <p class="view-lede">
-    The hub (this iframe) and the Shiny iframe are siblings under Claude's
-    host. They cannot postMessage each other directly, so they relay
-    through this service's
+    This iframe (the hub) and a second peer iframe live as siblings under
+    the host. They cannot postMessage each other directly — instead each
+    talks to this service's
     <code style="font-family:var(--font-mono);color:var(--accent)">/bus/publish</code>
-    + <code style="font-family:var(--font-mono);color:var(--accent)">/bus/subscribe</code>
-    endpoints. Topics:
-    <code style="font-family:var(--font-mono)">hub→shiny</code> for outbound,
-    <code style="font-family:var(--font-mono)">shiny→hub</code> for replies.
+    and <code style="font-family:var(--font-mono);color:var(--accent)">/bus/subscribe</code>.
+    Topics:
+    <code style="font-family:var(--font-mono)">hub→peer</code> for outbound,
+    <code style="font-family:var(--font-mono)">peer→hub</code> for replies.
   </p>
+
+  <div class="card" style="margin-bottom:18px;border-color:var(--accent)">
+    <div class="tag" style="margin-bottom:6px;color:var(--accent)">OPEN THE PEER</div>
+    <h3 style="margin:0 0 8px 0">You need a second iframe somewhere</h3>
+    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
+      The bus only makes sense with two participants. Pick one:
+    </p>
+    <ul style="margin:0 0 14px 0;padding-left:20px;color:var(--text-2);font-size:13px;line-height:1.7">
+      <li>
+        <strong style="color:var(--text-1)">Inside Claude:</strong> add
+        <code style="font-family:var(--font-mono);color:var(--accent);font-size:11px">{{ base_url }}/shiny-mcp</code>
+        as a second MCP connector, then ask Claude to <em>open the Shiny
+        dashboard</em>. The Shiny iframe mounts peer to this one; the
+        shim injects the bus widget. Same topics as below.
+      </li>
+      <li>
+        <strong style="color:var(--text-1)">Local preview / no Claude:</strong>
+        click the button to open a minimal peer page in a new browser
+        tab. Two tabs, two iframes, one bus — no Shiny or R needed.
+      </li>
+    </ul>
+    <div class="actions">
+      <button class="primary" type="button" onclick="openPeerTab()">Open peer iframe ↗</button>
+      <button class="ghost" type="button" onclick="copyPeerUrl()">Copy peer URL</button>
+      <span style="color:var(--text-3);font-size:11px;font-family:var(--font-mono);margin-left:8px" id="peer-copy-status"></span>
+    </div>
+  </div>
 
   <div class="card" style="margin-bottom:18px">
     <div class="tag" style="margin-bottom:6px;color:var(--accent)">HUB · SEND</div>
-    <h3 style="margin:0 0 8px 0">Delegate a task to the Shiny iframe</h3>
+    <h3 style="margin:0 0 8px 0">Publish on <code style="font-family:var(--font-mono)">hub→peer</code></h3>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
-      Type a message, click Send. The Shiny iframe (below) shows the
-      payload and can reply with a result.
+      Type, click Send. Every iframe subscribed to
+      <code style="font-family:var(--font-mono)">hub→peer</code> receives
+      the payload. The number after Send is how many listeners actually
+      got it — 0 means no peer is open.
     </p>
     <div style="display:flex;gap:8px;align-items:stretch;margin-bottom:12px">
       <input id="hub-send-input" type="text"
@@ -30,17 +59,17 @@
         style="flex:1;background:#0d0d10;border:1px solid var(--border-2);color:var(--text);
                padding:10px 12px;border-radius:4px;font-family:var(--font-mono);font-size:12px"
         onkeydown="if(event.key==='Enter')hubSend()">
-      <button class="primary" type="button" onclick="hubSend()">Send → Shiny</button>
+      <button class="primary" type="button" onclick="hubSend()">Send → peer</button>
     </div>
     <div id="hub-send-status" style="font-family:var(--font-mono);font-size:11px;color:var(--text-3);min-height:1.2em"></div>
   </div>
 
-  <div class="card" style="margin-bottom:18px">
+  <div class="card">
     <div class="tag" style="margin-bottom:6px;color:var(--accent)">HUB · RECEIVE</div>
-    <h3 style="margin:0 0 8px 0">Replies from Shiny (live)</h3>
+    <h3 style="margin:0 0 8px 0">Subscribe to <code style="font-family:var(--font-mono)">peer→hub</code></h3>
     <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
-      Subscribed to <code style="font-family:var(--font-mono)">/bus/subscribe?topic=shiny%E2%86%92hub</code>.
-      Every payload published on that topic streams in below.
+      Live SSE feed of every payload the peer publishes back. The
+      connection auto-reconnects on transient drops.
     </p>
     <div id="hub-recv-status" style="font-family:var(--font-mono);font-size:11px;color:var(--text-3);margin-bottom:8px">
       connecting…
@@ -49,46 +78,39 @@
       style="background:#0d0d10;border:1px solid var(--border);border-radius:6px;
              padding:10px 12px;font-family:var(--font-mono);font-size:12px;
              min-height:120px;max-height:280px;overflow-y:auto">
-      <div style="color:var(--text-3);font-style:italic">no replies yet — click Send and watch the Shiny widget below</div>
-    </div>
-  </div>
-
-  <div class="card" style="border-color:var(--accent)">
-    <div class="tag" style="margin-bottom:6px;color:var(--accent)">SHINY · PEER IFRAME</div>
-    <h3 style="margin:0 0 8px 0">Shiny dashboard (with bus widget overlay)</h3>
-    <p style="margin:0 0 12px 0;color:var(--text-2);font-size:13px">
-      Same embedded HTML as the
-      <button class="linklike" onclick="show('shiny')">peer MCP server</button>
-      would mount inside Claude. The
-      <code style="font-family:var(--font-mono);color:var(--accent)">shiny-embed-shim.js</code>
-      injects a small floating widget (top-right) with a Send button and
-      an incoming-message panel. In Claude this iframe lives under the
-      <code style="font-family:var(--font-mono)">shiny-mcp</code> server,
-      not under NAV AI — the bus is the only thing that connects them.
-    </p>
-    <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#0d0d10">
-      <iframe
-        id="delegation-shiny-iframe"
-        src="{{ base_url }}/shiny-embed.html"
-        title="Shiny — delegation demo embed"
-        style="display:block;border:0;width:100%;height:560px;background:#0d0d10"
-        sandbox="allow-scripts allow-same-origin allow-forms"
-        referrerpolicy="no-referrer"></iframe>
+      <div style="color:var(--text-3);font-style:italic">no replies yet — open a peer and click Send above</div>
     </div>
   </div>
 
   <script>
     (() => {
       const BASE = window.NAV_AI_BASE_URL;
-      const TOPIC_OUT = 'hub→shiny';
-      const TOPIC_IN  = 'shiny→hub';
+      const PEER_URL = BASE + '/ui/peer';
+      const TOPIC_OUT = 'hub→peer';
+      const TOPIC_IN  = 'peer→hub';
 
       const input  = () => document.getElementById('hub-send-input');
       const status = () => document.getElementById('hub-send-status');
       const recvStatus = () => document.getElementById('hub-recv-status');
       const feed   = () => document.getElementById('hub-recv-feed');
 
-      window.hubSend = async function () {
+      window.openPeerTab = () => {
+        window.open(PEER_URL, '_blank', 'noopener,noreferrer');
+      };
+
+      window.copyPeerUrl = () => {
+        const s = document.getElementById('peer-copy-status');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(PEER_URL).then(
+            () => { s.textContent = '✓ copied'; setTimeout(() => s.textContent = '', 2000); },
+            () => { s.textContent = '✗ copy failed'; }
+          );
+        } else {
+          s.textContent = 'clipboard unavailable — URL: ' + PEER_URL;
+        }
+      };
+
+      window.hubSend = async () => {
         const text = (input().value || '').trim();
         if (!text) { status().textContent = 'enter a message first'; return; }
         status().textContent = 'publishing…';
@@ -98,24 +120,28 @@
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
               topic: TOPIC_OUT,
-              payload: {from: 'hub', sent_at: Date.now(), text: text}
+              payload: {from: 'hub', sent_at: Date.now(), text},
             }),
           });
+          if (!r.ok) {
+            // The 404 message a fresh server gives is plain text, not
+            // JSON — surface the status so the user knows to redeploy
+            // rather than seeing a confusing "Unexpected token" parse error.
+            throw new Error('HTTP ' + r.status + ' — has the server been restarted with bus support?');
+          }
           const j = await r.json();
-          status().textContent = `→ ${j.delivered} listener(s) received the message`;
+          status().textContent = '→ ' + j.delivered + ' listener(s) received the message';
           input().value = '';
         } catch (e) {
           status().textContent = 'publish failed: ' + ((e && e.message) || e);
         }
       };
 
-      // Subscribe to replies from Shiny. EventSource auto-reconnects on
-      // network blips, so we don't need our own retry loop.
       let placeholderShown = true;
-      const url = BASE + '/bus/subscribe?topic=' + encodeURIComponent(TOPIC_IN);
-      const es = new EventSource(url);
-      es.onopen = () => { recvStatus().textContent = `subscribed → ${TOPIC_IN}`; };
-      es.onerror = () => { recvStatus().textContent = `reconnecting → ${TOPIC_IN}…`; };
+      const subUrl = BASE + '/bus/subscribe?topic=' + encodeURIComponent(TOPIC_IN);
+      const es = new EventSource(subUrl);
+      es.onopen = () => { recvStatus().textContent = 'subscribed → ' + TOPIC_IN; };
+      es.onerror = () => { recvStatus().textContent = 'reconnecting → ' + TOPIC_IN + '…'; };
       es.addEventListener('message', (ev) => {
         if (placeholderShown) { feed().innerHTML = ''; placeholderShown = false; }
         let parsed;

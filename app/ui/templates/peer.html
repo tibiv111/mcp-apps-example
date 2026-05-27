@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Bus peer · NAV AI</title>
+<style>
+  :root {
+    --bg:#0d0d10; --surface:#15161b; --border:#24252c; --border-2:#3a3b42;
+    --text:#e6e6ea; --text-2:#9aa0aa; --text-3:#7a8087;
+    --accent:#5fb878; --accent-d:#2a5a3a;
+    --mono:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
+  }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family:'Inter','Segoe UI',system-ui,sans-serif; min-height:100vh }
+  .wrap { max-width:520px; margin:0 auto; padding:28px 22px }
+  .brand { font-family:var(--mono); font-size:11px; letter-spacing:.16em;
+    color:var(--text-3); margin-bottom:6px }
+  h1 { font-family:Georgia,serif; font-style:italic; font-weight:400;
+    font-size:24px; margin:0 0 8px 0 }
+  p { color:var(--text-2); font-size:13px; line-height:1.55; margin:0 0 14px 0 }
+  code { font-family:var(--mono); font-size:12px; color:var(--accent) }
+  .card { background:var(--surface); border:1px solid var(--border);
+    border-radius:8px; padding:16px; margin-bottom:14px }
+  .tag { font-family:var(--mono); font-size:10px; letter-spacing:.16em;
+    color:var(--accent); text-transform:uppercase; margin-bottom:8px }
+  .feed { background:var(--bg); border:1px solid var(--border); border-radius:6px;
+    padding:8px 10px; min-height:80px; max-height:200px; overflow-y:auto;
+    font-family:var(--mono); font-size:11px; line-height:1.55 }
+  .feed .empty { color:var(--text-3); font-style:italic }
+  .row { border-bottom:1px solid var(--border); padding:3px 0 }
+  .row:last-child { border-bottom:0 }
+  .ts { color:var(--text-3); margin-right:6px }
+  .arrow { color:var(--accent); margin-right:6px }
+  input[type=text] { background:var(--bg); border:1px solid var(--border-2);
+    color:var(--text); padding:8px 10px; border-radius:4px;
+    font-family:var(--mono); font-size:12px; flex:1 }
+  button { background:transparent; color:var(--accent);
+    border:1px solid var(--accent-d); padding:8px 14px; border-radius:4px;
+    font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+    text-transform:uppercase; cursor:pointer }
+  button:hover { background:var(--accent); color:#0a0d12 }
+  .send-row { display:flex; gap:8px; margin-bottom:8px }
+  .status { font-family:var(--mono); font-size:11px; color:var(--text-3);
+    min-height:1.2em }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">NAV·AI · BUS PEER</div>
+  <h1>Standalone peer iframe.</h1>
+  <p>
+    Same iframe shape as the Shiny embed, but with no Shiny dependency.
+    Open this page in a second browser tab while the NAV AI shell runs
+    in the first, and you have two peer iframes talking through
+    <code>/bus/*</code>. Inside Claude, the Shiny MCP server mounts the
+    equivalent peer iframe using the same topics.
+  </p>
+
+  <div class="card">
+    <div class="tag">INCOMING · hub→peer</div>
+    <div id="status-in" class="status" style="margin-bottom:6px">connecting…</div>
+    <div id="feed" class="feed">
+      <div class="empty">waiting for messages from the hub…</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="tag">REPLY · peer→hub</div>
+    <div class="send-row">
+      <input id="reply" type="text" placeholder="reply text"
+             onkeydown="if(event.key==='Enter')sendReply()"/>
+      <button type="button" onclick="sendReply()">Send</button>
+    </div>
+    <div id="status-out" class="status"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // BASE_URL gets injected at render time so the page survives being
+  // opened from any origin (e.g. by clicking 'open peer' from the shell
+  // when the shell itself is hosted on Render).
+  const BASE = {{ base_url | tojson }};
+
+  // Topic pair — must match what the hub uses on the delegation page
+  // and what the Shiny shim widget uses. Arrow form is human-readable;
+  // it URL-encodes to %E2%86%92 in the subscribe URL.
+  const TOPIC_IN  = 'hub→peer';
+  const TOPIC_OUT = 'peer→hub';
+
+  const feed = document.getElementById('feed');
+  const statusIn = document.getElementById('status-in');
+  const statusOut = document.getElementById('status-out');
+  const reply = document.getElementById('reply');
+
+  let placeholderShown = true;
+
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
+
+  window.sendReply = async () => {
+    const text = (reply.value || '').trim();
+    if (!text) { statusOut.textContent = 'enter a reply first'; return; }
+    statusOut.textContent = 'publishing…';
+    try {
+      const r = await fetch(BASE + '/bus/publish', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          topic: TOPIC_OUT,
+          payload: {from: 'peer', sent_at: Date.now(), text},
+        }),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      statusOut.textContent = '→ delivered to ' + j.delivered + ' listener(s)';
+      reply.value = '';
+    } catch (e) {
+      statusOut.textContent = 'publish failed: ' + ((e && e.message) || e);
+    }
+  };
+
+  const url = BASE + '/bus/subscribe?topic=' + encodeURIComponent(TOPIC_IN);
+  const es = new EventSource(url);
+  es.onopen = () => { statusIn.textContent = 'subscribed → ' + TOPIC_IN; };
+  es.onerror = () => { statusIn.textContent = 'reconnecting → ' + TOPIC_IN + '…'; };
+  es.addEventListener('message', (ev) => {
+    if (placeholderShown) { feed.innerHTML = ''; placeholderShown = false; }
+    let parsed;
+    try { parsed = JSON.parse(ev.data); } catch { parsed = ev.data; }
+    const row = document.createElement('div');
+    row.className = 'row';
+    const ts = new Date().toLocaleTimeString();
+    row.innerHTML = '<span class="ts">' + ts + '</span>' +
+                    '<span class="arrow">←</span>' +
+                    '<span>' + escapeHtml(JSON.stringify(parsed)) + '</span>';
+    feed.appendChild(row);
+    feed.scrollTop = feed.scrollHeight;
+  });
+})();
+</script>
+</body>
+</html>

@@ -17,8 +17,8 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import pricing, state
-from ..config import SHELL_MIME
-from .render import render_shell_html
+from ..config import BASE_URL, SHELL_MIME
+from .render import render_shell_html, render_template
 
 router = APIRouter()
 
@@ -26,6 +26,14 @@ router = APIRouter()
 @router.get("/ui/shell", response_class=HTMLResponse)
 async def ui_shell_preview() -> HTMLResponse:
     return HTMLResponse(render_shell_html(), media_type=SHELL_MIME)
+
+
+@router.get("/ui/peer", response_class=HTMLResponse)
+async def ui_bus_peer() -> HTMLResponse:
+    """Standalone bus peer iframe — same role the Shiny iframe plays when
+    mounted by Claude, but with no Shiny dependency. Open in a separate
+    browser tab to demo the two-iframe pattern locally."""
+    return HTMLResponse(render_template("peer.html", base_url=BASE_URL))
 
 
 @router.get("/dashboard/snapshot")

@@ -21,6 +21,10 @@
     {# Visible build counter — increments on every server-pushed shell update.
        Watching it tick is the simplest way to see resources/updated land. #}
     <span class="rev" id="shell-rev" title="Shell revision (server-pushed)">rev {{ shell_state.revision }}</span>
+    {# Hidden until the host's ui/initialize result confirms fullscreen support.
+       shell.js#updateMaxButton toggles display + label between maximize/restore. #}
+    <button id="display-mode-toggle" type="button" class="mode-toggle"
+            style="display:none" onclick="toggleDisplayMode()">↗ maximize</button>
   </div>
 </header>
 

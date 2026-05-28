@@ -66,6 +66,19 @@ header.app {
 }
 @keyframes pulse { 0%,100%{opacity:0.5} 50%{opacity:1} }
 
+.mode-toggle {
+  background: transparent; color: var(--text-2); cursor: pointer;
+  border: 1px solid var(--border-2); border-radius: 4px;
+  padding: 4px 10px; font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  transition: color 120ms, border-color 120ms, background 120ms;
+}
+.mode-toggle:hover:not(:disabled) {
+  color: var(--accent); border-color: var(--accent-d);
+  background: rgba(212,168,90,0.08);
+}
+.mode-toggle:disabled { opacity: 0.5; cursor: default; }
+
 /* ── Layout ─────────────────────────────────────────────────────── */
 main { padding: var(--pad-lg); max-width: 1100px; margin: 0 auto; }
 .view { animation: rise 320ms cubic-bezier(.2,.7,.2,1) both; }

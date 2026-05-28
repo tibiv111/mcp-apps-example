@@ -91,8 +91,39 @@
   // Per SEP-1865, the host sends notifications (no id, has 'method') such as
   // ui/notifications/tool-input, ui/notifications/tool-result, and
   // ui/notifications/host-context-changed. Previous versions dropped these.
+  // Track the host's current display mode and which modes it advertises
+  // support for. Updated from ui/initialize result and from
+  // ui/notifications/host-context-changed. Drives the maximize button label
+  // and visibility — we only show the button if the host advertises
+  // 'fullscreen' (otherwise the request would just be rejected).
+  var hostDisplayMode = 'inline';
+  var hostAvailableModes = ['inline'];
+
+  function updateMaxButton() {
+    var btn = document.getElementById('display-mode-toggle');
+    if (!btn) return;
+    var canFullscreen = hostAvailableModes.indexOf('fullscreen') !== -1;
+    btn.style.display = canFullscreen ? '' : 'none';
+    if (hostDisplayMode === 'fullscreen') {
+      btn.textContent = '↙ restore';
+      btn.dataset.target = 'inline';
+      btn.title = 'Return to inline view';
+    } else {
+      btn.textContent = '↗ maximize';
+      btn.dataset.target = 'fullscreen';
+      btn.title = 'Expand to fullscreen';
+    }
+  }
+
   function applyHostContext(ctx) {
     if (!ctx || typeof ctx !== 'object') return;
+    if (typeof ctx.displayMode === 'string') {
+      hostDisplayMode = ctx.displayMode;
+    }
+    if (Array.isArray(ctx.availableDisplayModes)) {
+      hostAvailableModes = ctx.availableDisplayModes;
+    }
+    updateMaxButton();
     var vars = ctx.styles && ctx.styles.variables;
     if (vars && typeof vars === 'object') {
       Object.entries(vars).forEach(function(kv){
@@ -110,6 +141,27 @@
       document.head.appendChild(s);
     }
   }
+
+  // User-clickable toggle. Sends ui/request-display-mode per SEP-1865; the
+  // host MAY decline, so we only commit to the new mode when the host's
+  // host-context-changed notification confirms it.
+  window.toggleDisplayMode = async function() {
+    var btn = document.getElementById('display-mode-toggle');
+    var target = (btn && btn.dataset.target) || (hostDisplayMode === 'fullscreen' ? 'inline' : 'fullscreen');
+    if (btn) { btn.disabled = true; }
+    try {
+      var res = await sendRequest('ui/request-display-mode', { mode: target });
+      if (res && typeof res.mode === 'string') {
+        hostDisplayMode = res.mode;
+        updateMaxButton();
+        setTimeout(reportSize, 50);
+      }
+    } catch (e) {
+      try { console.debug('[NAV AI] display mode request rejected:', e); } catch(_){}
+    } finally {
+      if (btn) { btn.disabled = false; }
+    }
+  };
 
   window.addEventListener('message', (ev) => {
     const msg = ev.data;
@@ -201,7 +253,7 @@
       const initPromise = sendRequest('ui/initialize', {
         protocolVersion: '2025-06-18',
         appCapabilities: {
-          availableDisplayModes: ['inline'],
+          availableDisplayModes: ['inline', 'fullscreen'],
         },
         clientInfo: { name: 'nav-ai-shell', version: '0.1.0' },
       });
